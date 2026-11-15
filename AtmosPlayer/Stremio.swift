@@ -1,0 +1,441 @@
+import Foundation
+
+// MARK: - Stremio addon protocol
+//
+// An addon is a base URL serving JSON:
+//   {base}/manifest.json
+//   {base}/catalog/{type}/{id}.json            {base}/catalog/{type}/{id}/search={query}.json
+//   {base}/meta/{type}/{id}.json
+//   {base}/stream/{type}/{videoId}.json        (series episodes: "tt0903747:1:2")
+// Addons are written by many people, so every model below decodes leniently: a missing or
+// oddly typed field becomes nil instead of failing the whole response.
+
+// MARK: Lenient decoding helpers
+
+struct LossyElement<T: Decodable>: Decodable {
+    let value: T?
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+    }
+}
+
+extension KeyedDecodingContainer {
+    func lossyString(_ key: Key) -> String? {
+        if let s = try? decodeIfPresent(String.self, forKey: key) { return s }
+        if let i = try? decodeIfPresent(Int.self, forKey: key) { return String(i) }
+        if let d = try? decodeIfPresent(Double.self, forKey: key) { return String(d) }
+        return nil
+    }
+
+    func lossyInt(_ key: Key) -> Int? {
+        if let i = try? decodeIfPresent(Int.self, forKey: key) { return i }
+        if let d = try? decodeIfPresent(Double.self, forKey: key) { return Int(d) }
+        if let s = try? decodeIfPresent(String.self, forKey: key) { return Int(s) }
+        return nil
+    }
+
+    func lossyBool(_ key: Key) -> Bool? {
+        if let b = try? decodeIfPresent(Bool.self, forKey: key) { return b }
+        return nil
+    }
+
+    func lossyArray<T: Decodable>(_ type: T.Type, _ key: Key) -> [T] {
+        guard let items = try? decodeIfPresent([LossyElement<T>].self, forKey: key) else { return [] }
+        return items.compactMap { $0.value }
+    }
+
+    func stringArray(_ key: Key) -> [String]? {
+        guard let items = try? decodeIfPresent([LossyElement<String>].self, forKey: key) else { return nil }
+        return items.compactMap { $0.value }
+    }
+}
+
+struct AnyKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+    init(_ string: String) { stringValue = string }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+// MARK: Manifest
+
+struct StremioManifest: Decodable {
+    let id: String
+    let name: String
+    let version: String?
+    let description: String?
+    let logo: String?
+    let types: [String]
+    let idPrefixes: [String]?
+    let resources: [ResourceEntry]
+    let catalogs: [StremioCatalog]
+
+    struct ResourceEntry: Decodable {
+        let name: String
+        let types: [String]?
+        let idPrefixes: [String]?
+
+        init(from decoder: Decoder) throws {
+            if let single = try? decoder.singleValueContainer(), let name = try? single.decode(String.self) {
+                self.name = name
+                types = nil
+                idPrefixes = nil
+                return
+            }
+            let c = try decoder.container(keyedBy: AnyKey.self)
+            guard let name = c.lossyString(AnyKey("name")) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "resource without name"))
+            }
+            self.name = name
+            types = c.stringArray(AnyKey("types"))
+            idPrefixes = c.stringArray(AnyKey("idPrefixes"))
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        guard let id = c.lossyString(AnyKey("id")), let name = c.lossyString(AnyKey("name")) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "manifest needs id and name"))
+        }
+        self.id = id
+        self.name = name
+        version = c.lossyString(AnyKey("version"))
+        description = c.lossyString(AnyKey("description"))
+        logo = c.lossyString(AnyKey("logo"))
+        types = c.stringArray(AnyKey("types")) ?? []
+        idPrefixes = c.stringArray(AnyKey("idPrefixes"))
+        resources = c.lossyArray(ResourceEntry.self, AnyKey("resources"))
+        catalogs = c.lossyArray(StremioCatalog.self, AnyKey("catalogs"))
+    }
+
+    /// Whether this addon answers `resource` ("meta", "stream", …) for this type and id.
+    func supports(_ resource: String, type: String, id: String) -> Bool {
+        guard let entry = resources.first(where: { $0.name == resource }) else { return false }
+        let entryTypes = entry.types ?? types
+        if !entryTypes.isEmpty && !entryTypes.contains(type) { return false }
+        let prefixes = entry.idPrefixes ?? idPrefixes ?? []
+        if !prefixes.isEmpty && !prefixes.contains(where: { id.hasPrefix($0) }) { return false }
+        return true
+    }
+
+    var resourceNames: [String] { resources.map(\.name) }
+}
+
+struct StremioCatalog: Decodable {
+    let type: String
+    let id: String
+    let name: String?
+    let requiredExtras: [String]
+    let supportsSearch: Bool
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        guard let type = c.lossyString(AnyKey("type")), let id = c.lossyString(AnyKey("id")) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "catalog needs type and id"))
+        }
+        self.type = type
+        self.id = id
+        name = c.lossyString(AnyKey("name"))
+
+        var required: [String] = c.stringArray(AnyKey("extraRequired")) ?? []
+        var supported: [String] = c.stringArray(AnyKey("extraSupported")) ?? []
+        for extra in c.lossyArray(Extra.self, AnyKey("extra")) {
+            supported.append(extra.name)
+            if extra.isRequired { required.append(extra.name) }
+        }
+        requiredExtras = required
+        supportsSearch = supported.contains("search")
+    }
+
+    private struct Extra: Decodable {
+        let name: String
+        let isRequired: Bool
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: AnyKey.self)
+            guard let name = c.lossyString(AnyKey("name")) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "extra needs name"))
+            }
+            self.name = name
+            isRequired = c.lossyBool(AnyKey("isRequired")) ?? false
+        }
+    }
+
+    /// Browsable as a plain row: nothing has to be filled in.
+    var isBrowsable: Bool { requiredExtras.isEmpty }
+    /// Usable for search: search is supported and it is the only thing required.
+    var isSearchable: Bool { supportsSearch && requiredExtras.allSatisfy { $0 == "search" } }
+}
+
+// MARK: Catalog / meta / stream
+
+struct MetaPreview: Decodable, Identifiable, Hashable {
+    let id: String
+    let type: String
+    let name: String
+    let poster: String?
+    let releaseInfo: String?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        guard let id = c.lossyString(AnyKey("id")), let name = c.lossyString(AnyKey("name")) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "meta needs id and name"))
+        }
+        self.id = id
+        self.name = name
+        type = c.lossyString(AnyKey("type")) ?? "movie"
+        poster = c.lossyString(AnyKey("poster"))
+        releaseInfo = c.lossyString(AnyKey("releaseInfo"))
+    }
+}
+
+struct StremioMeta: Decodable {
+    let id: String
+    let type: String
+    let name: String
+    let poster: String?
+    let background: String?
+    let logo: String?
+    let description: String?
+    let releaseInfo: String?
+    let imdbRating: String?
+    let runtime: String?
+    let genres: [String]
+    let videos: [Video]
+
+    struct Video: Decodable, Identifiable, Hashable {
+        let id: String
+        let title: String?
+        let season: Int?
+        let episode: Int?
+        let released: String?
+        let thumbnail: String?
+        let overview: String?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: AnyKey.self)
+            guard let id = c.lossyString(AnyKey("id")) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "video needs id"))
+            }
+            self.id = id
+            title = c.lossyString(AnyKey("title")) ?? c.lossyString(AnyKey("name"))
+            season = c.lossyInt(AnyKey("season"))
+            episode = c.lossyInt(AnyKey("episode")) ?? c.lossyInt(AnyKey("number"))
+            released = c.lossyString(AnyKey("released"))
+            thumbnail = c.lossyString(AnyKey("thumbnail"))
+            overview = c.lossyString(AnyKey("overview")) ?? c.lossyString(AnyKey("description"))
+        }
+
+        /// "S1E2", or nil when the addon gives no numbers.
+        var code: String? {
+            guard let season, let episode else { return nil }
+            return "S\(season)E\(episode)"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        guard let id = c.lossyString(AnyKey("id")), let name = c.lossyString(AnyKey("name")) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "meta needs id and name"))
+        }
+        self.id = id
+        self.name = name
+        type = c.lossyString(AnyKey("type")) ?? "movie"
+        poster = c.lossyString(AnyKey("poster"))
+        background = c.lossyString(AnyKey("background"))
+        logo = c.lossyString(AnyKey("logo"))
+        description = c.lossyString(AnyKey("description"))
+        releaseInfo = c.lossyString(AnyKey("releaseInfo"))
+        imdbRating = c.lossyString(AnyKey("imdbRating"))
+        runtime = c.lossyString(AnyKey("runtime"))
+        genres = c.stringArray(AnyKey("genres")) ?? c.stringArray(AnyKey("genre")) ?? []
+        videos = c.lossyArray(Video.self, AnyKey("videos"))
+    }
+}
+
+struct StremioStream: Decodable, Identifiable {
+    let id = UUID()
+    let url: String?
+    let infoHash: String?
+    let externalUrl: String?
+    let ytId: String?
+    let name: String?
+    let title: String?
+    let description: String?
+    let filename: String?
+    let requestHeaders: [String: String]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        url = c.lossyString(AnyKey("url"))
+        infoHash = c.lossyString(AnyKey("infoHash"))
+        externalUrl = c.lossyString(AnyKey("externalUrl"))
+        ytId = c.lossyString(AnyKey("ytId"))
+        name = c.lossyString(AnyKey("name"))
+        title = c.lossyString(AnyKey("title"))
+        description = c.lossyString(AnyKey("description"))
+
+        var filename: String?
+        var headers: [String: String] = [:]
+        if let hints = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("behaviorHints")) {
+            filename = hints.lossyString(AnyKey("filename"))
+            if let proxy = try? hints.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("proxyHeaders")),
+               let request = try? proxy.decodeIfPresent([String: String].self, forKey: AnyKey("request")) {
+                headers = request
+            }
+        }
+        self.filename = filename
+        requestHeaders = headers
+    }
+
+    /// The direct http(s) link this app can play, if there is one.
+    var playableURL: URL? {
+        guard let url, let parsed = URL(string: url),
+              let scheme = parsed.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        return parsed
+    }
+
+    /// Why a stream without a direct link cannot play here.
+    var unplayableReason: String {
+        if infoHash != nil { return "Torrent: needs a debrid addon that returns direct links" }
+        if externalUrl != nil { return "Opens in another app or website" }
+        if ytId != nil { return "YouTube video" }
+        return "No direct link"
+    }
+
+    /// Everything the addon wrote about the stream, used for the badges.
+    var fullText: String {
+        [name, title, description, filename].compactMap { $0 }.joined(separator: "\n")
+    }
+
+    var badges: [String] {
+        let text = fullText.lowercased()
+        var out: [String] = []
+        if text.contains("atmos") { out.append("Atmos") }
+        if text.contains("truehd") { out.append("TrueHD") }
+        if text.contains("dts") { out.append("DTS") }
+        if text.contains("2160p") || text.contains("4k") { out.append("4K") }
+        if text.contains("dolby vision") || text.contains(" dv ") || text.contains(".dv.") { out.append("DV") }
+        if text.contains("hdr") { out.append("HDR") }
+        return out
+    }
+}
+
+private struct CatalogResponse: Decodable {
+    let metas: [MetaPreview]
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        metas = c.lossyArray(MetaPreview.self, AnyKey("metas"))
+    }
+}
+
+private struct MetaResponse: Decodable {
+    let meta: StremioMeta
+}
+
+private struct StreamResponse: Decodable {
+    let streams: [StremioStream]
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        streams = c.lossyArray(StremioStream.self, AnyKey("streams"))
+    }
+}
+
+// MARK: Installed addon + client
+
+struct InstalledAddon: Identifiable {
+    var id: String { manifest.id }
+    /// The manifest URL the user installed (https, ends in /manifest.json).
+    let transportURL: String
+    let manifest: StremioManifest
+
+    /// Everything before "/manifest.json".
+    var base: String {
+        var url = transportURL
+        if let query = url.firstIndex(of: "?") { url = String(url[..<query]) }
+        if let range = url.range(of: "/manifest.json", options: [.backwards, .caseInsensitive]) {
+            return String(url[..<range.lowerBound])
+        }
+        return url.hasSuffix("/") ? String(url.dropLast()) : url
+    }
+}
+
+enum StremioError: LocalizedError {
+    case badURL
+    case http(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .badURL: return "That isn't a valid addon link."
+        case .http(let code): return "The addon answered with HTTP \(code)."
+        }
+    }
+}
+
+enum StremioClient {
+    static let cinemetaURL = "https://v3-cinemeta.strem.io/manifest.json"
+
+    /// Accepts what people paste: stremio:// links, links without a scheme, links without /manifest.json.
+    static func normalizeManifestURL(_ raw: String) -> URL? {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.lowercased().hasPrefix("stremio://") {
+            text = "https://" + text.dropFirst("stremio://".count)
+        } else if !text.lowercased().hasPrefix("http://") && !text.lowercased().hasPrefix("https://") {
+            text = "https://" + text
+        }
+        guard var components = URLComponents(string: text), components.host != nil else { return nil }
+        if !components.path.lowercased().hasSuffix("manifest.json") {
+            var path = components.path
+            while path.hasSuffix("/") { path.removeLast() }
+            components.path = path + "/manifest.json"
+        }
+        return components.url
+    }
+
+    static func fetchManifest(_ url: URL) async throws -> (StremioManifest, Data) {
+        let data = try await get(url)
+        return (try JSONDecoder().decode(StremioManifest.self, from: data), data)
+    }
+
+    static func catalog(_ addon: InstalledAddon, _ catalog: StremioCatalog, search: String? = nil) async throws -> [MetaPreview] {
+        var extra = ""
+        if let search { extra = "/search=\(encode(search))" }
+        let url = try resourceURL(addon, "catalog", catalog.type, catalog.id, extra: extra)
+        return try JSONDecoder().decode(CatalogResponse.self, from: try await get(url)).metas
+    }
+
+    static func meta(_ addon: InstalledAddon, type: String, id: String) async throws -> StremioMeta {
+        let url = try resourceURL(addon, "meta", type, id)
+        return try JSONDecoder().decode(MetaResponse.self, from: try await get(url)).meta
+    }
+
+    static func streams(_ addon: InstalledAddon, type: String, id: String) async throws -> [StremioStream] {
+        let url = try resourceURL(addon, "stream", type, id)
+        return try JSONDecoder().decode(StreamResponse.self, from: try await get(url)).streams
+    }
+
+    private static func resourceURL(_ addon: InstalledAddon, _ resource: String, _ type: String, _ id: String, extra: String = "") throws -> URL {
+        guard let url = URL(string: "\(addon.base)/\(resource)/\(encode(type))/\(encode(id))\(extra).json") else {
+            throw StremioError.badURL
+        }
+        return url
+    }
+
+    private static func get(_ url: URL) async throws -> Data {
+        var request = URLRequest(url: url, timeoutInterval: 25)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw StremioError.http(http.statusCode)
+        }
+        return data
+    }
+
+    /// JavaScript's encodeURIComponent, which is what Stremio itself uses for ids and extras.
+    private static let componentAllowed = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+
+    static func encode(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: componentAllowed) ?? value
+    }
+}

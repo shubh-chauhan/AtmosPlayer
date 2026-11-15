@@ -5,9 +5,9 @@ import UniformTypeIdentifiers
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var history: HistoryStore
+    @EnvironmentObject private var coordinator: PlayerCoordinator
 
     @State private var urlText = ""
-    @State private var playing: PlayItem?
     @State private var showFilePicker = false
     @State private var message: String?
 
@@ -77,7 +77,7 @@ struct HomeView: View {
                     }
                 }
             }
-            .navigationTitle("AtmosPlayer")
+            .navigationTitle("Links")
         }
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.item]) { result in
             switch result {
@@ -87,23 +87,6 @@ struct HomeView: View {
             case .failure(let error):
                 message = error.localizedDescription
             }
-        }
-        .fullScreenCover(item: $playing) { item in
-            if let engine = model.engine {
-                PlayerView(item: item, engine: engine)
-            } else {
-                Text("Player engine unavailable")
-            }
-        }
-        // atmosplayer://play?url=<percent-encoded link>, for handing a link over from another app.
-        .onOpenURL { incoming in
-            guard incoming.scheme == "atmosplayer",
-                  let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false),
-                  let value = components.queryItems?.first(where: { $0.name == "url" })?.value,
-                  let target = URL(string: value) else { return }
-            urlText = target.absoluteString
-            history.add(target)
-            start(PlayItem(url: target))
         }
     }
 
@@ -124,6 +107,6 @@ struct HomeView: View {
             message = "Player engine unavailable."
             return
         }
-        playing = item
+        coordinator.play(item)
     }
 }

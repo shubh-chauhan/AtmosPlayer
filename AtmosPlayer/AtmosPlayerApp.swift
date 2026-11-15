@@ -27,13 +27,55 @@ final class AppModel: ObservableObject {
 struct AtmosPlayerApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var history = HistoryStore()
+    @StateObject private var addons = AddonStore()
+    @StateObject private var watch = WatchStore()
+    @StateObject private var coordinator = PlayerCoordinator()
 
     var body: some Scene {
         WindowGroup {
-            HomeView()
+            RootView()
                 .environmentObject(model)
                 .environmentObject(history)
+                .environmentObject(addons)
+                .environmentObject(watch)
+                .environmentObject(coordinator)
                 .preferredColorScheme(.dark)
+        }
+    }
+}
+
+struct RootView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var history: HistoryStore
+    @EnvironmentObject private var watch: WatchStore
+    @EnvironmentObject private var coordinator: PlayerCoordinator
+
+    var body: some View {
+        TabView {
+            DiscoverView()
+                .tabItem { Label("Discover", systemImage: "sparkles.tv") }
+            HomeView()
+                .tabItem { Label("Links", systemImage: "link") }
+            AddonsView()
+                .tabItem { Label("Addons", systemImage: "puzzlepiece.extension") }
+        }
+        .fullScreenCover(item: $coordinator.current) { item in
+            if let engine = model.engine {
+                PlayerView(item: item, engine: engine)
+                    .environmentObject(watch)
+            } else {
+                Text("Player engine unavailable: \(model.engineError ?? "unknown error")")
+                    .padding()
+            }
+        }
+        // atmosplayer://play?url=<percent-encoded link>, for handing a link over from another app.
+        .onOpenURL { incoming in
+            guard incoming.scheme == "atmosplayer",
+                  let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false),
+                  let value = components.queryItems?.first(where: { $0.name == "url" })?.value,
+                  let target = URL(string: value) else { return }
+            history.add(target)
+            coordinator.play(PlayItem(url: target))
         }
     }
 }

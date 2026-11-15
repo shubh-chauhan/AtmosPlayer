@@ -4,6 +4,7 @@ import AetherEngine
 struct PlayerView: View {
     let item: PlayItem
     @ObservedObject var engine: AetherEngine
+    @EnvironmentObject private var watch: WatchStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var showControls = true
@@ -49,6 +50,9 @@ struct PlayerView: View {
         .persistentSystemOverlays(.hidden)
         .task { await load() }
         .onDisappear {
+            if let ref = item.watch {
+                watch.record(ref, position: engine.clock.currentTime, duration: engine.duration)
+            }
             engine.stop()
             if item.securityScoped { item.url.stopAccessingSecurityScopedResource() }
         }
@@ -58,7 +62,7 @@ struct PlayerView: View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
                 Button { dismiss() } label: { Image(systemName: "xmark") }
-                Text(item.title)
+                Text(item.displayTitle)
                     .font(.footnote)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,8 +148,11 @@ struct PlayerView: View {
         var options = LoadOptions()
         // Decode a little of each E-AC-3 track up front so the Atmos badge is confirmed, not guessed.
         options.confirmAtmos = true
+        // Headers the addon asked for (some debrid / proxy links need them).
+        options.httpHeaders = item.headers
+        let resume = item.watch.flatMap { watch.resumePosition(for: $0.videoId) }
         do {
-            _ = try await engine.load(url: item.url, options: options)
+            _ = try await engine.load(url: item.url, startPosition: resume, options: options)
         } catch is CancellationError {
             // A newer load replaced this one; not a failure.
         } catch {

@@ -6,13 +6,27 @@ Dolby Atmos (Dolby Digital Plus / E-AC-3 JOC) so iOS renders it as spatial audio
 Playback is done by [AetherEngine](https://github.com/superuser404notfound/AetherEngine) (LGPL-3.0).
 This repo is only the app around it. It is built on GitHub's Mac machines, so no Mac is needed.
 
-## What phase 1 does
+## What it does
 
-- Paste a link and play it; recent links are remembered.
-- Open a file from the Files app.
-- Audio track and subtitle pickers, seek bar, skip 10 s.
+- **Discover** tab: browse and search movies and series through Stremio addons, open a title,
+  pick a season and episode, and see the streams every installed addon returns for it, with
+  badges (Atmos, 4K, HDR, DV, TrueHD, DTS) read from the addon's description. "Only streams
+  labelled Atmos" filters the list. "Continue watching" remembers where you stopped.
+- **Addons** tab: install addons by pasting their link (`https://…/manifest.json` or
+  `stremio://…`). Cinemeta, Stremio's official catalog addon, is installed on first launch.
+  Add your stream addon the same way. Only streams with a direct http(s) link play; torrent-only
+  streams need an addon that returns direct links (for example through a debrid service).
+- **Links** tab: paste any direct link and play it; recent links are remembered. Also opens files
+  from the Files app.
+- Player: audio track and subtitle pickers, seek bar, skip 10 s, resume.
 - A debug overlay (ladybug button) showing the audio codec, whether the track is Atmos, how the
   engine delivers it, and where iOS is sending the sound.
+
+### Getting an addon link from Stremio
+
+In Stremio, open **Addons**, select the addon and use its share / copy-link button. For addons
+you configured with your own settings, open the addon's configure page and copy the install link
+it gives you. Paste it into AtmosPlayer's Addons tab.
 
 Needs iOS 18 or later.
 

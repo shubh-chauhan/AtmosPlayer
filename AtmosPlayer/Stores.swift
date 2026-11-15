@@ -5,12 +5,26 @@ import SwiftUI
 struct PlayItem: Identifiable {
     let id = UUID()
     let url: URL
+    /// Name to show; links pasted by hand derive one from the URL.
+    var title: String? = nil
+    /// Request headers an addon asked for (`behaviorHints.proxyHeaders.request`).
+    var headers: [String: String] = [:]
+    /// Set when played from Discover, so the position is remembered for resuming.
+    var watch: VideoRef? = nil
     /// True for a file picked from the Files app: access must be released when playback ends.
     var securityScoped: Bool = false
 
-    var title: String {
-        let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
-        return name.isEmpty ? (url.host ?? url.absoluteString) : name
+    var displayTitle: String {
+        if let title, !title.isEmpty { return title }
+        // Use the last path part that looks like a name; stream links often end in a bare
+        // file index such as "/0".
+        let parts = url.pathComponents
+            .filter { $0 != "/" }
+            .map { $0.removingPercentEncoding ?? $0 }
+        if let named = parts.last(where: { $0.contains(".") || Int($0) == nil }) {
+            return named
+        }
+        return url.host ?? url.absoluteString
     }
 }
 
