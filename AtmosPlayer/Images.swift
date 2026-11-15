@@ -25,6 +25,12 @@ actor ImagePipeline {
         session = URLSession(configuration: config)
     }
 
+    /// Empties the memory and disk caches (Settings › Storage).
+    nonisolated func clearAll() {
+        memory.removeAllObjects()
+        session.configuration.urlCache?.removeAllCachedResponses()
+    }
+
     nonisolated func cached(_ url: URL, maxPixel: Int) -> UIImage? {
         memory.object(forKey: Self.key(url, maxPixel) as NSString)
     }
@@ -67,7 +73,24 @@ actor ImagePipeline {
     }
 }
 
-/// A remote image that fills its frame. `maxPixel` is the longest side it is decoded to.
+/// Asks image services for the size the app actually needs. Cinemeta catalogs link the small
+/// poster (300×450), which looks soft at three pixels per point; the same image exists at
+/// 500×750 ("medium") and 780×1170 ("large").
+enum ArtworkURL {
+    static func best(_ raw: String?, maxPixel: Int) -> URL? {
+        guard var text = raw, !text.isEmpty else { return nil }
+        if text.contains("images.metahub.space/poster/") {
+            let size = maxPixel > 800 ? "large" : "medium"
+            for tier in ["small", "medium", "large"] where tier != size {
+                text = text.replacingOccurrences(of: "/poster/\(tier)/", with: "/poster/\(size)/")
+            }
+        }
+        return URL(string: text)
+    }
+}
+
+/// A remote image that fills its frame (cropping, never growing past it). `maxPixel` is the
+/// longest side, in pixels, it is decoded to: about the shown size in points times three.
 struct RemoteImage: View {
     let url: String?
     var maxPixel: Int = 400
@@ -75,35 +98,48 @@ struct RemoteImage: View {
 
     @State private var image: UIImage?
 
-    private var parsed: URL? { url.flatMap(URL.init(string:)) }
+    init(url: String?, maxPixel: Int = 400, placeholderSymbol: String = "film") {
+        self.url = url
+        self.maxPixel = maxPixel
+        self.placeholderSymbol = placeholderSymbol
+        // Already decoded: show it in the first frame instead of flashing the placeholder.
+        if let resolved = ArtworkURL.best(url, maxPixel: maxPixel) {
+            _image = State(initialValue: ImagePipeline.shared.cached(resolved, maxPixel: maxPixel))
+        }
+    }
 
     var body: some View {
-        ZStack {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .transition(.opacity)
-            } else {
-                Color.white.opacity(0.08)
-                Image(systemName: placeholderSymbol)
-                    .foregroundStyle(.white.opacity(0.3))
+        Color.clear
+            .overlay {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .transition(.opacity)
+                } else {
+                    ZStack {
+                        Color.white.opacity(0.08)
+                        if !placeholderSymbol.isEmpty {
+                            Image(systemName: placeholderSymbol)
+                                .foregroundStyle(.white.opacity(0.3))
+                        }
+                    }
+                }
             }
-        }
-        .task(id: url) {
-            guard let parsed else {
-                image = nil
-                return
+            .clipped()
+            .task(id: url) {
+                guard let resolved = ArtworkURL.best(url, maxPixel: maxPixel) else {
+                    image = nil
+                    return
+                }
+                if let hit = ImagePipeline.shared.cached(resolved, maxPixel: maxPixel) {
+                    if image !== hit { image = hit }
+                    return
+                }
+                let loaded = await ImagePipeline.shared.image(resolved, maxPixel: maxPixel)
+                if !Task.isCancelled, let loaded {
+                    withAnimation(.easeOut(duration: 0.2)) { image = loaded }
+                }
             }
-            if let hit = ImagePipeline.shared.cached(parsed, maxPixel: maxPixel) {
-                image = hit
-                return
-            }
-            image = nil
-            let loaded = await ImagePipeline.shared.image(parsed, maxPixel: maxPixel)
-            if !Task.isCancelled {
-                withAnimation(.easeOut(duration: 0.2)) { image = loaded }
-            }
-        }
     }
 }

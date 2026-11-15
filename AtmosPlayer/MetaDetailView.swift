@@ -111,7 +111,7 @@ struct MetaDetailView: View {
             let minY = geo.frame(in: .scrollView).minY
             let stretch = max(minY, 0)
             ZStack(alignment: .bottom) {
-                RemoteImage(url: background, maxPixel: 1600)
+                RemoteImage(url: background, maxPixel: 2000)
                     .frame(width: geo.size.width, height: heroHeight + stretch)
                     .clipped()
                     .offset(y: -stretch)
@@ -324,7 +324,7 @@ struct EpisodeCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                RemoteImage(url: video.thumbnail, maxPixel: 700, placeholderSymbol: "tv")
+                RemoteImage(url: video.thumbnail, maxPixel: 900, placeholderSymbol: "tv")
                     .frame(width: width, height: width * 9 / 16)
                 if let progress {
                     GeometryReader { geo in

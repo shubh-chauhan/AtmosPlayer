@@ -265,7 +265,7 @@ struct HeroCard: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            RemoteImage(url: item.background ?? item.poster, maxPixel: 1400)
+            RemoteImage(url: item.background ?? item.poster, maxPixel: 1600)
                 .clipped()
             LinearGradient(stops: [
                 .init(color: .clear, location: 0.35),
@@ -387,11 +387,10 @@ struct PosterCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RemoteImage(url: poster, maxPixel: 420)
+            RemoteImage(url: poster, maxPixel: 720)
                 .frame(width: width, height: width * 1.5)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.08)))
-                .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
             Text(title)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.white.opacity(0.9))
@@ -411,7 +410,7 @@ struct ContinueCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                RemoteImage(url: entry.ref.background ?? entry.ref.poster, maxPixel: 700)
+                RemoteImage(url: entry.ref.background ?? entry.ref.poster, maxPixel: 1000)
                     .frame(width: width, height: width * 9 / 16)
                 LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 6) {
@@ -559,6 +558,7 @@ enum PreviewMode {
         switch screen {
         case "stremio": return 2
         case "search": return 3
+        case "settings": return 4
         default: return 0
         }
     }

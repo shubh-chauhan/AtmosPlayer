@@ -294,6 +294,11 @@ final class WatchStore: ObservableObject {
         }
     }
 
+    func clearAll() {
+        entries = []
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
     func remove(_ videoId: String) {
         if let entry = entries.first(where: { $0.ref.videoId == videoId }) { onRemove?(entry.ref) }
         entries.removeAll { $0.ref.videoId == videoId }

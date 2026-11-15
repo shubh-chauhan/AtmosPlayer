@@ -1,7 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Combine
-import AetherEngine
+import EngineBundle
 
 // MARK: - Torrent statistics
 
@@ -198,11 +198,12 @@ struct PlayerStartupView: View {
 /// The player's statistics panel ("Stream details"): network, torrent, video, audio and the
 /// Atmos check. Audio-route values aren't published, so it re-reads them once a second.
 struct DebugOverlay: View {
-    @ObservedObject var engine: AetherEngine
-    @ObservedObject var clock: PlaybackClock
+    // Read once a second by the TimelineView below rather than observed, so the panel doesn't
+    // redraw with every playback tick while you scroll it.
+    let engine: AetherEngine
+    let clock: PlaybackClock
     @ObservedObject var torrent: TorrentStatsMonitor
     let item: PlayItem
-    let onClose: () -> Void
 
     private var activeTrack: TrackInfo? {
         guard let index = engine.activeAudioTrackIndex else { return nil }
@@ -211,17 +212,7 @@ struct DebugOverlay: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Stream Details").font(.headline)
-                    Spacer()
-                    Button(action: onClose) {
-                        Image(systemName: "xmark.circle.fill").font(.title3)
-                            .symbolRenderingMode(.hierarchical)
-                    }
-                    .buttonStyle(.plain)
-                }
-
+            VStack(alignment: .leading, spacing: 14) {
                 section("Network") {
                     row("Source", sourceSummary)
                     row("Buffered ahead", bufferAhead)
@@ -238,6 +229,12 @@ struct DebugOverlay: View {
 
                 section("Video") {
                     row("Codec", videoSummary)
+                    row("Picture", pictureSummary,
+                        highlight: engine.videoFormat != .sdr)
+                    if let conversion = engine.dolbyVisionConversion {
+                        row("Dolby Vision", String(describing: conversion))
+                    }
+                    row("Screen", screenSummary)
                     row("Path", "\(engine.videoRoute.rawValue) · \(engine.activeVideoDecoder ?? "-")")
                 }
 
@@ -250,10 +247,25 @@ struct DebugOverlay: View {
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.white)
-            .padding(16)
-            .frame(maxWidth: 420, alignment: .leading)
-            .glass(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var pictureSummary: String {
+        let shown = String(describing: engine.videoFormat)
+        let source = String(describing: engine.sourceVideoFormat)
+        var text = shown == source ? shown.uppercased() : "\(source.uppercased()) shown as \(shown.uppercased())"
+        if let profile = engine.sourceDVProfile { text += " · Profile \(profile)" }
+        return text
+    }
+
+    private var screenSummary: String {
+        var parts: [String] = []
+        if DisplayCapabilities.dolbyVision { parts.append("Dolby Vision") }
+        if DisplayCapabilities.hdr { parts.append("HDR10 / HLG") }
+        return parts.isEmpty ? "SDR" : parts.joined(separator: " · ")
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -269,11 +281,11 @@ struct DebugOverlay: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .foregroundStyle(.white.opacity(0.6))
-                .frame(width: 104, alignment: .leading)
+                .frame(width: 96, alignment: .leading)
             Text(value)
                 .fontWeight(highlight ? .bold : .regular)
                 .foregroundStyle(highlight ? Color.green : Color.white)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

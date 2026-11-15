@@ -1,12 +1,16 @@
 import SwiftUI
 import UIKit
 import MediaPlayer
-import AetherEngine
+import AVFoundation
+import EngineBundle
 
 /// Full-screen player in the style of the Apple TV app: glass buttons, a bare centre
 /// transport, the title and a thin timeline at the bottom.
 struct PlayerView: View {
-    @ObservedObject var engine: AetherEngine
+    /// Not observed here: the screen follows `status`, which changes only when something the
+    /// layout depends on changes. Child views observe the engine for their own parts.
+    let engine: AetherEngine
+    @StateObject private var status = PlayerStatus()
     @EnvironmentObject private var watch: WatchStore
     @EnvironmentObject private var addons: AddonStore
     @Environment(\.dismiss) private var dismiss
@@ -17,7 +21,6 @@ struct PlayerView: View {
     @StateObject private var pip = PiPController()
     @StateObject private var torrent = TorrentStatsMonitor()
 
-    @AppStorage("player.debug") private var showStats = false
     @AppStorage("subtitle.scale") private var subtitleScale = 1.0
     @AppStorage("subtitle.background") private var subtitleBackground = true
     @AppStorage("player.skipSeconds") private var skipSeconds = 10.0
@@ -28,7 +31,7 @@ struct PlayerView: View {
     @State private var scrubbing = false
     @State private var hideTask: Task<Void, Never>?
     @State private var countdownTask: Task<Void, Never>?
-    @State private var panel: PlayerPanel?
+    @State private var sidePanel: PlayerSidePanel?
     @State private var fill = false
     @State private var speed: Float = 1
     @State private var audioDelay = 0.0
@@ -38,6 +41,9 @@ struct PlayerView: View {
     @State private var onlineSubtitles: [AddonSubtitle] = []
     @State private var addedSubtitleURLs: [String: Int] = [:]
     @State private var nextState: NextState = .idle
+    /// One quiet retry per item when a stream fails mid-playback (a dropped connection,
+    /// a debrid link that expired), resuming where it stopped.
+    @State private var retriedItemId: UUID?
 
     enum NextState: Equatable {
         case idle
@@ -54,15 +60,16 @@ struct PlayerView: View {
     /// Until the picture (or, for audio-only, playback) is up, the loading screen shows.
     private var starting: Bool {
         loadError == nil
-            && !engine.hasFirstFrameReadyForDisplay
-            && engine.state != .playing
-            && engine.state != .paused
+            && !status.hasFirstFrame
+            && status.state != .playing
+            && status.state != .paused
     }
 
     /// Playback has really begun, so the position means something.
     private var hasStarted: Bool {
         loadError == nil && engine.duration > 0
-            && (engine.hasFirstFrameReadyForDisplay || engine.state == .playing || engine.state == .paused)
+            && (engine.hasFirstFrameReadyForDisplay || engine.state == .playing || engine.state == .paused
+                || engine.state == .ended)
     }
 
     var body: some View {
@@ -103,17 +110,15 @@ struct PlayerView: View {
                     }
                 }
 
-                if showStats && !starting {
-                    DebugOverlay(engine: engine, clock: engine.clock, torrent: torrent, item: item) {
-                        withAnimation { showStats = false }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.top, 74)
-                    .padding(.horizontal, 24)
-                    .transition(.opacity)
-                }
-
                 upNextCard
+
+                if let sidePanel, !starting {
+                    SidePanelContainer(title: sidePanel.title, onClose: closePanel) {
+                        panelContent(sidePanel)
+                    }
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(2)
+                }
 
                 if starting {
                     PlayerStartupView(engine: engine, torrent: torrent,
@@ -130,6 +135,7 @@ struct PlayerView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.35), value: starting)
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: sidePanel)
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
@@ -139,6 +145,7 @@ struct PlayerView: View {
             await saveWhilePlaying()
         }
         .onAppear {
+            status.attach(engine)
             UIApplication.shared.isIdleTimerDisabled = true
             OrientationLock.set(.landscape)
             pip.attach(engine)
@@ -159,7 +166,11 @@ struct PlayerView: View {
             // iOS may end the app while it's in the background; save first.
             if phase == .background { recordProgress(push: true) }
         }
-        .onChange(of: engine.state) { _, state in
+        .onChange(of: status.state) { _, state in
+            if case .error(let message) = state {
+                handlePlaybackFailure(message)
+                return
+            }
             if state == .ended {
                 startNextCountdown()
             } else if case .countdown = nextState {
@@ -169,28 +180,35 @@ struct PlayerView: View {
             }
             if state == .playing { scheduleHide() }
         }
-        .sheet(item: $panel) { which in
-            switch which {
-            case .tracks:
-                TracksPanel(engine: engine, onlineSubtitles: onlineSubtitles,
-                            addedSubtitleURLs: $addedSubtitleURLs)
-                    .presentationDetents([.medium, .large])
-                    .presentationBackground(.ultraThinMaterial)
-            case .settings:
-                SettingsPanel(engine: engine, speed: $speed, audioDelay: $audioDelay,
-                              subtitleOffset: $subtitleOffset, subtitleScale: $subtitleScale,
-                              subtitleBackground: $subtitleBackground, showDebug: $showStats,
-                              skipSeconds: $skipSeconds)
-                    .presentationDetents([.medium, .large])
-                    .presentationBackground(.ultraThinMaterial)
-            case .chapters:
-                ChaptersPanel(engine: engine) { panel = nil }
-                    .presentationDetents([.medium, .large])
-                    .presentationBackground(.ultraThinMaterial)
-            }
-        }
-        .onChange(of: panel) { _, value in
-            if value == nil { scheduleHide() } else { hideTask?.cancel() }
+    }
+
+    // MARK: Panels
+
+    private func openPanel(_ which: PlayerSidePanel) {
+        hideTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.2)) { showControls = false }
+        sidePanel = which
+    }
+
+    private func closePanel() {
+        sidePanel = nil
+        interacted()
+    }
+
+    @ViewBuilder
+    private func panelContent(_ which: PlayerSidePanel) -> some View {
+        switch which {
+        case .tracks:
+            TrackPickerPanel(engine: engine, onlineSubtitles: onlineSubtitles,
+                             addedSubtitleURLs: $addedSubtitleURLs, subtitleOffset: $subtitleOffset)
+        case .details:
+            DebugOverlay(engine: engine, clock: engine.clock, torrent: torrent, item: item)
+        case .settings:
+            PlayerSettingsPanel(engine: engine, speed: $speed, audioDelay: $audioDelay,
+                                subtitleOffset: $subtitleOffset, subtitleScale: $subtitleScale,
+                                subtitleBackground: $subtitleBackground, skipSeconds: $skipSeconds)
+        case .chapters:
+            ChapterListPanel(engine: engine) { closePanel() }
         }
     }
 
@@ -227,7 +245,7 @@ struct PlayerView: View {
         hideTask?.cancel()
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard !Task.isCancelled, engine.state == .playing, !scrubbing, panel == nil else { return }
+            guard !Task.isCancelled, engine.state == .playing, !scrubbing, sidePanel == nil else { return }
             withAnimation(.easeInOut(duration: 0.35)) { showControls = false }
         }
     }
@@ -288,12 +306,7 @@ struct PlayerView: View {
         }
     }
 
-    private var isBusy: Bool {
-        switch engine.playbackPhase {
-        case .loading, .rebuffering, .seeking, .stalled: return true
-        default: return false
-        }
-    }
+    private var isBusy: Bool { status.busy }
 
     private var centerTransport: some View {
         HStack(spacing: 70) {
@@ -307,7 +320,7 @@ struct PlayerView: View {
                 engine.togglePlayPause()
                 interacted()
             } label: {
-                Image(systemName: engine.state == .playing ? "pause.fill" : "play.fill")
+                Image(systemName: status.state == .playing ? "pause.fill" : "play.fill")
                     .font(.system(size: 54, weight: .regular))
                     .frame(width: 84, height: 84)
                     .contentShape(Circle())
@@ -384,72 +397,8 @@ struct PlayerView: View {
         .simultaneousGesture(TapGesture().onEnded { holdControls() })
     }
 
-    /// Online subtitle tracks this player added; shown under "Online Subtitles", not twice.
-    private var addedTrackIds: Set<Int> {
-        Set(addedSubtitleURLs.filter { $0.key != "__active" }.map(\.value))
-    }
-
     private var audioSubtitleMenu: some View {
-        Menu {
-            Section("Audio") {
-                if engine.audioTracks.isEmpty {
-                    Text("No audio tracks")
-                }
-                ForEach(engine.audioTracks) { track in
-                    Button {
-                        engine.selectAudioTrack(index: track.id)
-                        interacted()
-                    } label: {
-                        let selected = engine.activeAudioTrackIndex == track.id
-                        let badge = track.isAtmos ? " · Dolby Atmos" : (track.isDTSX ? " · DTS:X" : "")
-                        if selected {
-                            Label(track.name + badge, systemImage: "checkmark")
-                        } else {
-                            Text(track.name + badge)
-                        }
-                        Text(TracksPanel.audioDetail(track))
-                    }
-                }
-            }
-            Section("Subtitles") {
-                Button {
-                    engine.clearSubtitle()
-                    interacted()
-                } label: {
-                    if !engine.isSubtitleActive {
-                        Label("Off", systemImage: "checkmark")
-                    } else {
-                        Text("Off")
-                    }
-                }
-                ForEach(engine.subtitleTracks.filter { !addedTrackIds.contains($0.id) }) { track in
-                    Button {
-                        engine.selectSubtitleTrack(index: track.id)
-                        interacted()
-                    } label: {
-                        if engine.isSubtitleActive && engine.activeSubtitleTrackIndex == track.id {
-                            Label(track.name, systemImage: "checkmark")
-                        } else {
-                            Text(track.name)
-                        }
-                        if let detail = TracksPanel.subtitleDetail(track) { Text(detail) }
-                    }
-                }
-                Button {
-                    panel = .tracks
-                } label: {
-                    Label(onlineSubtitles.isEmpty ? "All Audio & Subtitles…" : "Online Subtitles (\(onlineSubtitles.count))…",
-                          systemImage: "captions.bubble")
-                }
-            }
-        } label: {
-            Image(systemName: "text.bubble")
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-                .glass(Circle(), interactive: true)
-        }
-        .simultaneousGesture(TapGesture().onEnded { holdControls() })
+        GlassIconButton(symbol: "text.bubble") { openPanel(.tracks) }
     }
 
     private var moreMenu: some View {
@@ -459,16 +408,12 @@ struct PlayerView: View {
                 setFill(!fill)
                 interacted()
             }
-            if !engine.mediaChapters.isEmpty {
-                Button("Chapters", systemImage: "list.bullet.rectangle") { panel = .chapters }
+            if status.hasChapters {
+                Button("Chapters", systemImage: "list.bullet.rectangle") { openPanel(.chapters) }
             }
-            Button("Playback Settings", systemImage: "slider.horizontal.3") { panel = .settings }
-            Button {
-                withAnimation { showStats.toggle() }
-                interacted()
-            } label: {
-                Label(showStats ? "Hide Stream Details" : "Stream Details", systemImage: "waveform.path.ecg")
-            }
+            Button("Audio & Subtitles", systemImage: "text.bubble") { openPanel(.tracks) }
+            Button("Playback Settings", systemImage: "slider.horizontal.3") { openPanel(.settings) }
+            Button("Stream Details", systemImage: "waveform.path.ecg") { openPanel(.details) }
             Button("Lock Controls", systemImage: "lock.fill") {
                 withAnimation { locked = true }
                 scheduleHide()
@@ -519,8 +464,9 @@ struct PlayerView: View {
     }
 
     private func startNextCountdown() {
-        guard !item.queue.isEmpty, nextState == .idle else { return }
-        nextState = .countdown(8)
+        guard !item.queue.isEmpty, nextState == .idle, Prefs.bool(Prefs.autoplayNext, default: true) else { return }
+        let seconds = UserDefaults.standard.object(forKey: Prefs.nextCountdown) as? Int ?? 8
+        nextState = .countdown(seconds)
         countdownTask?.cancel()
         countdownTask = Task { @MainActor in
             while case .countdown(let left) = nextState, !Task.isCancelled {
@@ -560,6 +506,22 @@ struct PlayerView: View {
 
     // MARK: Loading
 
+    private func handlePlaybackFailure(_ message: String) {
+        // Keep the place first, so a retry (automatic or Try Again) resumes there.
+        recordProgress(push: false)
+        if retriedItemId != item.id, hasStarted || engine.clock.currentTime > 0 {
+            retriedItemId = item.id
+            let failedId = item.id
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard item.id == failedId, case .error = engine.state else { return }
+                await load()
+            }
+            return
+        }
+        loadError = "Playback stopped.\n\(message)"
+    }
+
     private func load() async {
         loadError = nil
         torrent.watch(item.stream)
@@ -567,7 +529,14 @@ struct PlayerView: View {
         var options = LoadOptions()
         options.confirmAtmos = true
         options.httpHeaders = item.headers
-        options.preferredAudioLanguages = preferredLanguages
+        options.preferredAudioLanguages = AudioPreferences.languages
+        options.preferredSubtitleLanguages = SubtitlePreferences.autoLanguages
+        // Picture: Dolby Vision and HDR10 / HLG as the screen shows them.
+        options.panelPresentsDolbyVision = DisplayCapabilities.dolbyVision
+        options.panelIsInHDRMode = DisplayCapabilities.hdr
+        options.dolbyVisionHandling = VideoPreferences.dolbyVisionOn ? .automatic : .baseLayerOnly
+        // Sound: TrueHD Atmos and DTS:X keep their heights (7.1.4, spatialised on AirPods).
+        options.objectAudioRendering = AudioPreferences.objectAudioOn ? .render(.l714) : .off
         let resume = item.watch.flatMap { watch.resumePosition(for: $0.videoId) }.flatMap { $0 > 0 ? $0 : nil }
 
         var info: [String: Any] = [MPMediaItemPropertyTitle: item.watch?.episodeLabel ?? item.displayTitle]
@@ -599,11 +568,6 @@ struct PlayerView: View {
             try? await Task.sleep(nanoseconds: 30_000_000_000)
             if engine.state == .playing { recordProgress(push: false) }
         }
-    }
-
-    private var preferredLanguages: [String] {
-        Locale.preferredLanguages.compactMap { Locale(identifier: $0).language.languageCode?.identifier }
-            + ["en"]
     }
 
     private func loadOnlineSubtitles(for id: UUID) async {
@@ -707,11 +671,6 @@ struct PlayerView: View {
         .glass(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .padding(40)
     }
-}
-
-enum PlayerPanel: String, Identifiable {
-    case tracks, settings, chapters
-    var id: String { rawValue }
 }
 
 struct SeekFlash: Equatable {
@@ -1006,6 +965,10 @@ struct SubtitleOverlay: View {
     let scale: Double
     let background: Bool
     let lifted: Bool
+    @AppStorage(Prefs.subtitleColor) private var colorName = "white"
+    @AppStorage(Prefs.subtitleBold) private var bold = true
+    @AppStorage(Prefs.subtitleBackgroundOpacity) private var backgroundOpacity = 0.45
+    @AppStorage(Prefs.subtitleLift) private var lift = 0.0
 
     var body: some View {
         let now = clock.sourceTime - offset
@@ -1029,16 +992,16 @@ struct SubtitleOverlay: View {
                     VStack {
                         Spacer()
                         Text(text)
-                            .font(.system(size: 20 * scale, weight: .semibold))
+                            .font(.system(size: 20 * scale, weight: bold ? .semibold : .regular))
                             .multilineTextAlignment(.center)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(SubtitlePreferences.color(colorName))
                             .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(background ? Color.black.opacity(0.45) : Color.clear,
+                            .background(background ? Color.black.opacity(backgroundOpacity) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                             .padding(.horizontal, 40)
-                            .padding(.bottom, lifted ? 130 : 24)
+                            .padding(.bottom, (lifted ? 130 : 24) + lift)
                             .animation(.easeInOut(duration: 0.2), value: lifted)
                     }
                     .frame(maxWidth: .infinity)

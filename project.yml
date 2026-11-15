@@ -5,9 +5,9 @@ options:
     iOS: "18.0"
   createIntermediateGroups: true
 packages:
-  AetherEngine:
-    url: https://github.com/superuser404notfound/AetherEngine
-    from: 7.67.1
+  # AetherEngine with its optional components (Atmos heights, Dolby Vision extras) enabled.
+  EngineBundle:
+    path: EngineBundle
 targets:
   AtmosPlayer:
     type: application
@@ -15,8 +15,8 @@ targets:
     sources:
       - AtmosPlayer
     dependencies:
-      - package: AetherEngine
-        product: AetherEngine
+      - package: EngineBundle
+        product: EngineBundle
     scheme: {}
     info:
       path: AtmosPlayer/Info.plist

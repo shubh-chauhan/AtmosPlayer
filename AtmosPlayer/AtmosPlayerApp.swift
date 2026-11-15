@@ -1,5 +1,5 @@
 import SwiftUI
-import AetherEngine
+import EngineBundle
 
 /// One engine for the whole app (AetherEngine's rule). Created once at launch.
 @MainActor
@@ -93,6 +93,9 @@ struct RootView: View {
             }
             Tab("Stremio", systemImage: "puzzlepiece.extension.fill", value: 2) {
                 AddonsView()
+            }
+            Tab("Settings", systemImage: "gearshape.fill", value: 4) {
+                AppSettingsView()
             }
             Tab(value: 3, role: .search) {
                 SearchScreen()
