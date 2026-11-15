@@ -1,0 +1,129 @@
+import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
+
+struct HomeView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var history: HistoryStore
+
+    @State private var urlText = ""
+    @State private var playing: PlayItem?
+    @State private var showFilePicker = false
+    @State private var message: String?
+
+    /// Filled in by the CI build: where this repo's TestMedia folder is served from.
+    private var testMediaBase: String {
+        (Bundle.main.object(forInfoDictionaryKey: "TestMediaBase") as? String) ?? ""
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let engineError = model.engineError {
+                    Section {
+                        Text("Player engine failed to start: \(engineError)")
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Section("Play a link") {
+                    TextField("https://… (.mkv, .mp4, .m3u8)", text: $urlText, axis: .vertical)
+                        .lineLimit(1...4)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    HStack {
+                        Button("Paste") {
+                            if let pasted = UIPasteboard.general.string {
+                                urlText = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        Spacer()
+                        Button("Play") { playTypedURL() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    if let message {
+                        Text(message).font(.footnote).foregroundStyle(.red)
+                    }
+                }
+
+                Section("Test") {
+                    Button("Open a file from Files…") { showFilePicker = true }
+                    if !testMediaBase.isEmpty,
+                       let testURL = URL(string: testMediaBase + "/dolby-atmos-test.m3u8") {
+                        Button("Dolby Atmos test stream (audio only)") {
+                            start(PlayItem(url: testURL))
+                        }
+                    }
+                }
+
+                if !history.entries.isEmpty {
+                    Section("Recent") {
+                        ForEach(history.entries, id: \.self) { entry in
+                            Button {
+                                urlText = entry
+                                playTypedURL()
+                            } label: {
+                                Text(entry)
+                                    .font(.footnote)
+                                    .lineLimit(2)
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        .onDelete { history.remove(at: $0) }
+                        Button("Clear history", role: .destructive) { history.clear() }
+                    }
+                }
+            }
+            .navigationTitle("AtmosPlayer")
+        }
+        .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.item]) { result in
+            switch result {
+            case .success(let fileURL):
+                let scoped = fileURL.startAccessingSecurityScopedResource()
+                start(PlayItem(url: fileURL, securityScoped: scoped))
+            case .failure(let error):
+                message = error.localizedDescription
+            }
+        }
+        .fullScreenCover(item: $playing) { item in
+            if let engine = model.engine {
+                PlayerView(item: item, engine: engine)
+            } else {
+                Text("Player engine unavailable")
+            }
+        }
+        // atmosplayer://play?url=<percent-encoded link>, for handing a link over from another app.
+        .onOpenURL { incoming in
+            guard incoming.scheme == "atmosplayer",
+                  let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false),
+                  let value = components.queryItems?.first(where: { $0.name == "url" })?.value,
+                  let target = URL(string: value) else { return }
+            urlText = target.absoluteString
+            history.add(target)
+            start(PlayItem(url: target))
+        }
+    }
+
+    private func playTypedURL() {
+        let trimmed = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            message = "That doesn't look like an http(s) link."
+            return
+        }
+        message = nil
+        history.add(url)
+        start(PlayItem(url: url))
+    }
+
+    private func start(_ item: PlayItem) {
+        guard model.engine != nil else {
+            message = "Player engine unavailable."
+            return
+        }
+        playing = item
+    }
+}

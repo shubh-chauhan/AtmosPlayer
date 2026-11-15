@@ -1,0 +1,83 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: Unsigned .ipa (Xcode 27)
+    # AetherEngine needs Xcode 27 / Swift 6.4. `xcode-27` is GitHub's hosted image for it.
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build (no code signing)
+        run: |
+          xcodebuild build \
+            -project AtmosPlayer.xcodeproj \
+            -scheme AtmosPlayer \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            -quiet \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia"
+
+      - name: Package .ipa
+        run: |
+          APP=build/Build/Products/Release-iphoneos/AtmosPlayer.app
+          ls "$APP" "$APP/Frameworks"
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry AtmosPlayer.ipa Payload
+          ls -lh AtmosPlayer.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AtmosPlayer-unsigned-ipa
+          path: AtmosPlayer.ipa
+          if-no-files-found: error
+
+  test-media:
+    name: Atmos test MKV
+    # Dolby's public Atmos demo audio (E-AC-3 JOC), copied bit-for-bit into an MKV next to a
+    # generated test picture. Kept as a build artifact for personal testing, not published.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build atmos-test.mkv
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          B=http://webapi.streaming.dolby.com/v0_9/sources/media/v01/dash/audio/en/ec-3/2
+          curl -sf -o init.mp4 "$B/init.mp4"
+          for i in 1 2 3 4 5 6 7; do curl -sf -o "seg-$i.m4s" "$B/seg-$i.m4s"; done
+          cat init.mp4 seg-1.m4s seg-2.m4s seg-3.m4s seg-4.m4s seg-5.m4s seg-6.m4s seg-7.m4s > atmos.mp4
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i "testsrc2=size=1280x720:rate=24" -i atmos.mp4 \
+            -map 0:v -map 1:a -c:v libx264 -preset veryfast -pix_fmt yuv420p \
+            -c:a copy -shortest atmos-test.mkv
+          ffprobe -hide_banner atmos-test.mkv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atmos-test-mkv
+          path: atmos-test.mkv
+          if-no-files-found: error
