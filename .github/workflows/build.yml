@@ -119,6 +119,10 @@ jobs:
           xcrun simctl io "$UDID" screenshot shots/player.png
           sleep 8
           xcrun simctl io "$UDID" screenshot shots/player-later.png
+          # The iPhone home screen, to check the app icon.
+          xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
+          sleep 4
+          xcrun simctl io "$UDID" screenshot shots/springboard.png
           ls -l shots
 
       - uses: actions/upload-artifact@v4
@@ -126,6 +130,18 @@ jobs:
         with:
           name: preview-screenshots
           path: shots
+          if-no-files-found: warn
+
+      - name: Package the simulator app
+        # For running the app in a browser (appetize.io: upload this zip, it runs in an iPhone simulator).
+        run: |
+          cd build/Build/Products/Debug-iphonesimulator
+          ditto -c -k --sequesterRsrc --keepParent AtmosPlayer.app "$GITHUB_WORKSPACE/AtmosPlayer-simulator.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AtmosPlayer-simulator-app
+          path: AtmosPlayer-simulator.zip
           if-no-files-found: warn
 
       - name: Publish to the previews branch

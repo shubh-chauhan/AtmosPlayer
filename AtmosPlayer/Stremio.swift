@@ -314,11 +314,18 @@ struct StremioStream: Decodable, Identifiable {
     /// gets the same quality and source.
     let bingeGroup: String?
     let requestHeaders: [String: String]
+    /// Torrent streams: which file in the torrent, its trackers, and name filters.
+    let fileIdx: Int?
+    let sources: [String]
+    let fileMustInclude: [String]
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         url = c.lossyString(AnyKey("url"))
         infoHash = c.lossyString(AnyKey("infoHash"))
+        fileIdx = c.lossyInt(AnyKey("fileIdx"))
+        sources = c.stringArray(AnyKey("sources")) ?? []
+        fileMustInclude = c.stringArray(AnyKey("fileMustInclude")) ?? []
         externalUrl = c.lossyString(AnyKey("externalUrl"))
         ytId = c.lossyString(AnyKey("ytId"))
         name = c.lossyString(AnyKey("name"))
@@ -341,16 +348,28 @@ struct StremioStream: Decodable, Identifiable {
         requestHeaders = headers
     }
 
-    /// The direct http(s) link this app can play, if there is one.
+    /// The http(s) link this app plays: the addon's direct link, or for a torrent, the file
+    /// served by your Stremio streaming server (the same URL Stremio itself builds).
     var playableURL: URL? {
-        guard let url, let parsed = URL(string: url),
-              let scheme = parsed.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
-        return parsed
+        if let url, let parsed = URL(string: url),
+           let scheme = parsed.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            return parsed
+        }
+        if let infoHash, let server = StreamingServer.baseURL {
+            var components = URLComponents(string: server + "/" + infoHash.lowercased() + "/" + String(fileIdx ?? -1))
+            var query = sources.map { URLQueryItem(name: "tr", value: $0) }
+            query += fileMustInclude.map { URLQueryItem(name: "f", value: $0) }
+            if !query.isEmpty { components?.queryItems = query }
+            return components?.url
+        }
+        return nil
     }
+
+    var isTorrent: Bool { url == nil && infoHash != nil }
 
     /// Why a stream without a direct link cannot play here.
     var unplayableReason: String {
-        if infoHash != nil { return "Torrent: needs a debrid addon that returns direct links" }
+        if infoHash != nil { return "Torrent: add your streaming server in the Stremio tab" }
         if externalUrl != nil { return "Opens in another app or website" }
         if ytId != nil { return "YouTube video" }
         return "No direct link"
@@ -495,5 +514,44 @@ enum StremioClient {
 
     static func encode(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: componentAllowed) ?? value
+    }
+}
+
+/// Your Stremio streaming server (the "Streaming server URL" in Stremio's settings). It turns
+/// torrent streams into normal links this player can open.
+enum StreamingServer {
+    static let key = "stremio.streamingServer"
+
+    /// The saved address without a trailing slash, or nil when none is set.
+    static var baseURL: String? {
+        guard let raw = UserDefaults.standard.string(forKey: key) else { return nil }
+        return normalize(raw)
+    }
+
+    static func normalize(_ raw: String) -> String? {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if !text.contains("://") { text = "http://" + text }
+        while text.hasSuffix("/") { text.removeLast() }
+        guard let url = URL(string: text), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https", url.host != nil else { return nil }
+        return text
+    }
+
+    /// Asks the server for its settings, the same check Stremio does. Returns nil when it answers.
+    static func check(_ base: String) async -> String? {
+        guard let url = URL(string: base + "/settings") else { return "That isn't a valid address." }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200, (try? JSONSerialization.jsonObject(with: data)) != nil else {
+                return "The server answered with HTTP \(code)."
+            }
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 }

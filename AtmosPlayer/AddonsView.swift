@@ -7,6 +7,11 @@ struct AddonsView: View {
     @EnvironmentObject private var watch: WatchStore
     @AppStorage(StremioAccount.pushProgressKey) private var pushProgress = true
     @State private var showSignIn = false
+    @AppStorage(StreamingServer.key) private var serverURL = ""
+    @State private var serverDraft = ""
+    @State private var serverStatus: String?
+    @State private var serverOK = false
+    @State private var checkingServer = false
 
     @State private var link = ""
     @State private var installing = false
@@ -17,6 +22,7 @@ struct AddonsView: View {
         NavigationStack {
             List {
                 accountSection
+                serverSection
 
                 Section {
                     TextField("https://…/manifest.json or stremio://…", text: $link, axis: .vertical)
@@ -76,6 +82,68 @@ struct AddonsView: View {
                 StremioSignInView()
                     .presentationDetents([.medium, .large])
             }
+        }
+    }
+
+    @ViewBuilder
+    private var serverSection: some View {
+        Section {
+            TextField("https://…:12470", text: $serverDraft)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .onSubmit { Task { await saveServer() } }
+            HStack {
+                Button("Paste") {
+                    if let pasted = UIPasteboard.general.string {
+                        serverDraft = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+                if checkingServer { ProgressView() }
+                Button(serverDraft == serverURL && !serverURL.isEmpty ? "Test" : "Save") {
+                    Task { await saveServer() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(serverDraft.trimmingCharacters(in: .whitespaces).isEmpty || checkingServer)
+            }
+            if let serverStatus {
+                Label(serverStatus, systemImage: serverOK ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(serverOK ? .green : .orange)
+            }
+            if !serverURL.isEmpty {
+                Button("Remove Server", role: .destructive) {
+                    serverURL = ""
+                    serverDraft = ""
+                    serverStatus = nil
+                }
+            }
+        } header: {
+            Text("Streaming server")
+        } footer: {
+            Text("The same address as \"Streaming server URL\" in Stremio's settings. With it, torrent streams play here just like in Stremio.")
+        }
+        .onAppear { if serverDraft.isEmpty { serverDraft = serverURL } }
+    }
+
+    private func saveServer() async {
+        guard let normalized = StreamingServer.normalize(serverDraft) else {
+            serverOK = false
+            serverStatus = "That isn't a valid address."
+            return
+        }
+        serverDraft = normalized
+        serverURL = normalized
+        checkingServer = true
+        defer { checkingServer = false }
+        if let problem = await StreamingServer.check(normalized) {
+            serverOK = false
+            serverStatus = "Saved, but the server didn't answer: \(problem)"
+        } else {
+            serverOK = true
+            serverStatus = "Connected. Torrent streams will play through this server."
         }
     }
 

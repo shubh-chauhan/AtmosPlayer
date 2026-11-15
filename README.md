@@ -97,4 +97,12 @@ keeps just the session key, in the iOS Keychain.
 ## Previews without sideloading
 
 Every push also runs the app in the iOS Simulator and screenshots Home, a title page, the
-Stremio tab, Search and the player. They're pushed to the `previews` branch.
+Stremio tab, Search, the player and the iPhone home screen. They're pushed to the `previews`
+branch. To click around the app yourself in a browser, download the `AtmosPlayer-simulator-app`
+artifact from the run and upload the zip to appetize.io (it runs it in an iPhone simulator).
+
+## Streaming server (torrent streams)
+
+In the **Stremio** tab, under **Streaming server**, paste the same address you use as
+"Streaming server URL" in Stremio's settings and tap Save. Torrent streams from your addons
+then play through it, exactly as in Stremio.

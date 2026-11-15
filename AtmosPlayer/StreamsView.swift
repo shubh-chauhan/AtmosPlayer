@@ -166,6 +166,9 @@ struct StreamRow: View {
                     }
                     if stream.playableURL == nil {
                         Text(stream.unplayableReason).font(.caption2).foregroundStyle(.orange)
+                    } else if stream.isTorrent {
+                        Label("Torrent · via your streaming server", systemImage: "server.rack")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 0)
