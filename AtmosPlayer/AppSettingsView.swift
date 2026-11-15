@@ -96,7 +96,7 @@ struct AppSettingsView: View {
     @AppStorage(Prefs.subtitleColor) private var subtitleColor = "white"
     @AppStorage(Prefs.subtitleBold) private var subtitleBold = true
     @AppStorage(Prefs.subtitleLift) private var subtitleLift = 0.0
-    @AppStorage(Prefs.atmosOnly) private var atmosOnly = false
+    @AppStorage(StreamFilterStore.key) private var savedFilters = ""
 
     @State private var cacheCleared = false
     @State private var confirmClearWatch = false
@@ -169,8 +169,15 @@ struct AppSettingsView: View {
                     }
                 }
 
-                Section("Streams") {
-                    Toggle("Show Dolby Atmos streams only", isOn: $atmosOnly)
+                Section {
+                    Toggle("Show Dolby Atmos streams only", isOn: atmosOnly)
+                    if !savedFilters.isEmpty {
+                        Button("Clear stream filters") { savedFilters = "" }
+                    }
+                } header: {
+                    Text("Streams")
+                } footer: {
+                    Text("Filter by quality, HDR, audio, codec and source from the chips on the stream list. Your selection is remembered.")
                 }
 
                 Section("Storage") {
@@ -197,6 +204,15 @@ struct AppSettingsView: View {
                 Text("Resume points are removed here. Your Stremio account isn't changed.")
             }
         }
+    }
+
+    private var atmosOnly: Binding<Bool> {
+        Binding(get: { StreamFilterStore.decode(savedFilters).contains(.atmos) },
+                set: { on in
+                    var set = StreamFilterStore.decode(savedFilters)
+                    if on { set.insert(.atmos) } else { set.remove(.atmos) }
+                    savedFilters = StreamFilterStore.encode(set)
+                })
     }
 
     private var appVersion: String {

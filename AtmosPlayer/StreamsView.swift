@@ -18,7 +18,49 @@ struct StreamsView: View {
 
     @State private var results: [AddonResult] = []
     @State private var loading = true
-    @AppStorage("streams.atmosOnly") private var atmosOnly = false
+    @AppStorage(StreamFilterStore.key) private var savedFilters = ""
+    @AppStorage("streams.sort") private var sort: StreamSort = .addon
+
+    /// Selected chips, kept between titles like Stremio's filters.
+    private var selectedFilters: Binding<Set<StreamFilter>> {
+        Binding(get: { StreamFilterStore.decode(savedFilters) },
+                set: { savedFilters = StreamFilterStore.encode($0) })
+    }
+
+    /// How many loaded streams carry each value, for the chips.
+    private var available: [StreamFilter: Int] {
+        var counts: [StreamFilter: Int] = [:]
+        for result in results {
+            for stream in result.streams {
+                for value in stream.traits.all { counts[value, default: 0] += 1 }
+            }
+        }
+        return counts
+    }
+
+    private var totalCount: Int { results.reduce(0) { $0 + $1.streams.count } }
+
+    private func visible(_ result: AddonResult) -> [StremioStream] {
+        let selected = StreamFilterStore.decode(savedFilters)
+        var list = result.streams.filter { StreamFilter.matches($0.traits, selected: selected) }
+        switch sort {
+        case .addon: break
+        case .quality:
+            list = list.enumerated().sorted {
+                ($0.element.traits.qualityScore, -$0.offset) > ($1.element.traits.qualityScore, -$1.offset)
+            }.map(\.element)
+        case .size:
+            list = list.enumerated().sorted {
+                ($0.element.traits.sizeGB ?? -1, -$0.offset) > ($1.element.traits.sizeGB ?? -1, -$1.offset)
+            }.map(\.element)
+        case .sizeSmall:
+            list = list.enumerated().sorted {
+                ($0.element.traits.sizeGB ?? .infinity, $0.offset) < ($1.element.traits.sizeGB ?? .infinity, $1.offset)
+            }.map(\.element)
+        }
+        // The stream played last time goes first, marked, as in Stremio.
+        return list.filter { isLast($0, addonId: result.id) } + list.filter { !isLast($0, addonId: result.id) }
+    }
 
     private var sources: [InstalledAddon] {
         addons.supporting("stream", type: video.type, id: video.videoId)
@@ -28,7 +70,7 @@ struct StreamsView: View {
         List {
             Section {
                 HStack(spacing: 14) {
-                    RemoteImage(url: video.background ?? video.poster, maxPixel: 400)
+                    LandscapeArtwork(candidates: ArtworkURL.landscapeCandidates(for: video), maxPixel: 400)
                         .frame(width: 120, height: 68)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     VStack(alignment: .leading, spacing: 3) {
@@ -44,8 +86,15 @@ struct StreamsView: View {
                     }
                 }
                 .listRowBackground(Color.clear)
-                Toggle(isOn: $atmosOnly.animation()) {
-                    Label("Dolby Atmos only", systemImage: "hifispeaker.2.fill")
+            }
+
+            if totalCount > 0 || !savedFilters.isEmpty {
+                Section {
+                    StreamFilterBar(available: available, selected: selectedFilters, sort: $sort,
+                                    shownCount: results.reduce(0) { $0 + visible($1).count },
+                                    totalCount: totalCount)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
                 }
             }
 
@@ -61,12 +110,9 @@ struct StreamsView: View {
                     if let error = result.error {
                         Text(error).font(.footnote).foregroundStyle(.red)
                     } else {
-                        let filtered = result.streams.filter { !atmosOnly || $0.badges.contains("Atmos") }
-                        // The stream played last time goes first, marked, as in Stremio.
-                        let shown = filtered.filter { isLast($0, addonId: result.id) }
-                            + filtered.filter { !isLast($0, addonId: result.id) }
+                        let shown = visible(result)
                         if shown.isEmpty {
-                            Text(atmosOnly ? "No streams labelled Atmos." : "No streams.")
+                            Text(result.streams.isEmpty ? "No streams." : "No streams match the filters.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -165,9 +211,9 @@ struct StreamRow: View {
                                     .font(.caption2.weight(.heavy))
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
-                                    .background(badge == "Atmos" ? Color.white : Color.white.opacity(0.15),
+                                    .background(badge == "Atmos" || badge == "DV" ? Color.white : Color.white.opacity(0.15),
                                                 in: RoundedRectangle(cornerRadius: 4))
-                                    .foregroundStyle(badge == "Atmos" ? Color.black : Color.white)
+                                    .foregroundStyle(badge == "Atmos" || badge == "DV" ? Color.black : Color.white)
                             }
                         }
                     }

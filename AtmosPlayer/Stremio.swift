@@ -318,6 +318,8 @@ struct StremioStream: Decodable, Identifiable {
     let fileIdx: Int?
     let sources: [String]
     let fileMustInclude: [String]
+    /// Quality, HDR, sound and size read from the text above, once.
+    let traits: StreamTraits
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -346,6 +348,7 @@ struct StremioStream: Decodable, Identifiable {
         self.filename = filename
         bingeGroup = binge
         requestHeaders = headers
+        traits = StreamTraits([name, title, description, filename].compactMap { $0 }.joined(separator: " "))
     }
 
     /// The http(s) link this app plays: the addon's direct link, or for a torrent, the file
@@ -386,17 +389,7 @@ struct StremioStream: Decodable, Identifiable {
         [name, title, description, filename].compactMap { $0 }.joined(separator: "\n")
     }
 
-    var badges: [String] {
-        let text = fullText.lowercased()
-        var out: [String] = []
-        if text.contains("atmos") { out.append("Atmos") }
-        if text.contains("truehd") { out.append("TrueHD") }
-        if text.contains("dts") { out.append("DTS") }
-        if text.contains("2160p") || text.contains("4k") { out.append("4K") }
-        if text.contains("dolby vision") || text.contains(" dv ") || text.contains(".dv.") { out.append("DV") }
-        if text.contains("hdr") { out.append("HDR") }
-        return out
-    }
+    var badges: [String] { traits.badges.map(\.badge) }
 }
 
 private struct CatalogResponse: Decodable {
