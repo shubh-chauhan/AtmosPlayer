@@ -57,6 +57,88 @@ jobs:
           path: AtmosPlayer.ipa
           if-no-files-found: error
 
+  preview:
+    name: Simulator screenshots
+    # Runs the app in the iOS Simulator and screenshots the main screens, so a build can be
+    # looked at before it's sideloaded. Pushed to the `previews` branch (raw files are public).
+    runs-on: xcode-27
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build for the simulator
+        run: |
+          xcodebuild build \
+            -project AtmosPlayer.xcodeproj \
+            -scheme AtmosPlayer \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            -quiet \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia"
+
+      - name: Screenshot screens
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = [d for runtime, ds in json.load(sys.stdin)["devices"].items() if "iOS" in runtime for d in ds]
+          phones = [d for d in devices if d["name"].startswith("iPhone")]
+          pick = next((d for d in phones if "Pro" in d["name"] and "Max" not in d["name"]), phones[0])
+          print(pick["udid"])')
+          echo "Simulator: $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/AtmosPlayer.app
+          mkdir -p shots
+          shot() {
+            screen=$1; wait=$2
+            xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
+            xcrun simctl launch "$UDID" com.atmosplayer.app -previewScreen "$screen"
+            sleep "$wait"
+            xcrun simctl io "$UDID" screenshot "shots/$screen.png"
+          }
+          shot home 20
+          shot detail 20
+          shot stremio 8
+          shot search 8
+          xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
+          xcrun simctl launch "$UDID" com.atmosplayer.app -previewScreen player
+          sleep 7
+          xcrun simctl io "$UDID" screenshot shots/player.png
+          sleep 8
+          xcrun simctl io "$UDID" screenshot shots/player-later.png
+          ls -l shots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preview-screenshots
+          path: shots
+          if-no-files-found: warn
+
+      - name: Publish to the previews branch
+        run: |
+          cd shots
+          git init -q -b previews
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          echo "Screenshots of ${{ github.sha }}" > README.md
+          git add -A
+          git commit -qm "Screenshots of ${{ github.sha }}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" previews
+
   test-media:
     name: Atmos test MKV
     # Dolby's public Atmos demo audio (E-AC-3 JOC), copied bit-for-bit into an MKV next to a

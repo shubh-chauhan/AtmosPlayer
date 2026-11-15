@@ -38,10 +38,13 @@ struct AtmosPlayerApp: App {
     @StateObject private var watch = WatchStore()
     @StateObject private var favorites = FavoritesStore()
     @StateObject private var coordinator = PlayerCoordinator()
+    @StateObject private var account = StremioAccount()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .environmentObject(account)
                 .environmentObject(model)
                 .environmentObject(history)
                 .environmentObject(addons)
@@ -50,6 +53,20 @@ struct AtmosPlayerApp: App {
                 .environmentObject(coordinator)
                 .preferredColorScheme(.dark)
                 .tint(.white)
+                .task {
+                    // Progress recorded when the player closes also goes to the Stremio account.
+                    let account = self.account
+                    watch.onRecord = { ref, position, duration in
+                        Task { await account.pushProgress(ref, position: position, duration: duration) }
+                    }
+                    await account.sync(addons: addons, watch: watch)
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    // Pick up what was watched in the Stremio apps meanwhile.
+                    if phase == .active {
+                        Task { await account.sync(addons: addons, watch: watch, ifOlderThan: 120) }
+                    }
+                }
         }
     }
 }
@@ -60,20 +77,29 @@ struct RootView: View {
     @EnvironmentObject private var watch: WatchStore
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
+    @State private var tab = PreviewMode.initialTab
 
     var body: some View {
-        TabView {
-            Tab("Home", systemImage: "play.tv.fill") {
+        TabView(selection: $tab) {
+            Tab("Home", systemImage: "play.tv.fill", value: 0) {
                 HomeScreen()
             }
-            Tab("Links", systemImage: "link") {
+            Tab("Links", systemImage: "link", value: 1) {
                 HomeView()
             }
-            Tab("Addons", systemImage: "puzzlepiece.extension.fill") {
+            Tab("Stremio", systemImage: "puzzlepiece.extension.fill", value: 2) {
                 AddonsView()
             }
-            Tab(role: .search) {
+            Tab(value: 3, role: .search) {
                 SearchScreen()
+            }
+        }
+        .task {
+            // CI screenshots only: open the player on the Dolby test stream.
+            if PreviewMode.screen == "player", let base = Bundle.main.object(forInfoDictionaryKey: "TestMediaBase") as? String,
+               !base.isEmpty, let url = URL(string: base + "/dolby-atmos-test.m3u8") {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                coordinator.play(PlayItem(url: url, title: "Dolby Atmos test"))
             }
         }
         .fullScreenCover(item: $coordinator.current) { item in

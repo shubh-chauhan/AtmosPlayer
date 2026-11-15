@@ -131,6 +131,28 @@ final class AddonStore: ObservableObject {
         return manifest.name
     }
 
+    /// Takes over the addon list of the signed-in Stremio account, in its order. Addons added
+    /// only in this app stay, after the account's. Stremio's on-device "local" addon is skipped.
+    func adoptAccountAddons(_ collection: [(url: String, manifest: Data)]) {
+        var adopted: [InstalledAddon] = []
+        for entry in collection {
+            guard let url = URL(string: entry.url), let host = url.host?.lowercased(),
+                  host != "127.0.0.1", host != "localhost",
+                  let manifest = try? JSONDecoder().decode(StremioManifest.self, from: entry.manifest),
+                  !adopted.contains(where: { $0.id == manifest.id }) else { continue }
+            adopted.append(InstalledAddon(transportURL: entry.url, manifest: manifest))
+            manifestCache[manifest.id] = entry.manifest
+        }
+        guard !adopted.isEmpty else { return }
+        let extras = addons.filter { local in !adopted.contains { $0.id == local.id } }
+        let merged = adopted + extras
+        // Skip the save (and the Home reload it triggers) when nothing changed.
+        let unchanged = merged.map { "\($0.id)|\($0.transportURL)" } == addons.map { "\($0.id)|\($0.transportURL)" }
+        addons = merged
+        UserDefaults.standard.set(true, forKey: seededKey)
+        if !unchanged { save() }
+    }
+
     func remove(at offsets: IndexSet) {
         for index in offsets { manifestCache[addons[index].id] = nil }
         addons.remove(atOffsets: offsets)
@@ -174,9 +196,52 @@ final class WatchStore: ObservableObject {
         var progress: Double { duration > 0 ? min(position / duration, 1) : 0 }
     }
 
+    /// One Stremio library item's progress, as `StremioAccount` reads it.
+    struct StremioSnapshot {
+        let ref: VideoRef
+        let position: Double
+        let duration: Double
+        let updated: Date
+        let modified: Date
+        let continueWatching: Bool
+    }
+
     @Published private(set) var entries: [Entry] = []
+    /// Set by the app to forward progress to the Stremio account.
+    var onRecord: ((VideoRef, Double, Double) -> Void)?
     private let key = "watch.v1"
     private let limit = 40
+
+    /// Merges Stremio's Continue Watching: whichever side was watched more recently wins, and
+    /// a title cleared in Stremio after it was last watched here leaves the list. One entry per title.
+    func mergeFromStremio(_ snapshots: [StremioSnapshot]) {
+        var byTitle: [String: Entry] = [:]
+        for entry in entries {
+            if let existing = byTitle[entry.ref.metaId], existing.updated >= entry.updated { continue }
+            byTitle[entry.ref.metaId] = entry
+        }
+        for snapshot in snapshots {
+            let local = byTitle[snapshot.ref.metaId]
+            if snapshot.continueWatching {
+                if local == nil || snapshot.updated > local!.updated {
+                    var ref = snapshot.ref
+                    // Keep the nicer artwork and episode title known locally for the same episode.
+                    if let local, local.ref.videoId == ref.videoId { ref = local.ref }
+                    byTitle[snapshot.ref.metaId] = Entry(ref: ref, position: snapshot.position,
+                                                         duration: snapshot.duration, updated: snapshot.updated)
+                }
+            } else if let local, snapshot.modified > local.updated {
+                byTitle[snapshot.ref.metaId] = nil
+            }
+        }
+        let merged = Array(byTitle.values.sorted { $0.updated > $1.updated }.prefix(limit))
+        let same = merged.map { "\($0.id)@\($0.position)" } == entries.map { "\($0.id)@\($0.position)" }
+        guard !same else { return }
+        entries = merged
+        if let data = try? JSONEncoder().encode(merged) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
 
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
@@ -194,7 +259,9 @@ final class WatchStore: ObservableObject {
     /// (nearly) the end leaves the list.
     func record(_ ref: VideoRef, position: Double, duration: Double) {
         guard position.isFinite, duration.isFinite else { return }
-        var updated = entries.filter { $0.ref.videoId != ref.videoId }
+        onRecord?(ref, position, duration)
+        // One entry per title: a new episode replaces the previous one of the same series.
+        var updated = entries.filter { $0.ref.videoId != ref.videoId && $0.ref.metaId != ref.metaId }
         let finished = duration > 0 && position > duration - max(120, duration * 0.05)
         if position >= 30 && !finished {
             updated.insert(Entry(ref: ref, position: position, duration: duration, updated: Date()), at: 0)

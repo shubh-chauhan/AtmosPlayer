@@ -85,3 +85,16 @@ it; they say why.
 - Plain `http://` links are allowed (App Transport Security is opened up), since many stream
   links are not https.
 - Another app can hand over a link with `atmosplayer://play?url=<percent-encoded link>`.
+
+## Stremio account
+
+In the **Stremio** tab, tap **Sign in with Stremio** and use your Stremio email and password.
+The app then uses your account's addons (in the same order), shows your Stremio Library on
+Home, merges Stremio's Continue Watching, and sends where you stop back to Stremio (turn that
+off with "Send watch progress to Stremio"). The password goes only to api.strem.io; the app
+keeps just the session key, in the iOS Keychain.
+
+## Previews without sideloading
+
+Every push also runs the app in the iOS Simulator and screenshots Home, a title page, the
+Stremio tab, Search and the player. They're pushed to the `previews` branch.

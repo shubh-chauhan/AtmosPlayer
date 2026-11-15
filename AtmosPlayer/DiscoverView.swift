@@ -50,9 +50,11 @@ struct HomeScreen: View {
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var watch: WatchStore
     @EnvironmentObject private var favorites: FavoritesStore
+    @EnvironmentObject private var account: StremioAccount
 
     @State private var rows: [CatalogRow] = []
     @State private var loading = false
+    @State private var path = NavigationPath()
 
     private var heroItems: [MetaPreview] {
         let source = rows.first?.items ?? []
@@ -60,7 +62,7 @@ struct HomeScreen: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 28) {
                     if !heroItems.isEmpty {
@@ -94,6 +96,17 @@ struct HomeScreen: View {
                         }
                     }
 
+                    if !account.library.isEmpty {
+                        Shelf(title: "Stremio Library") {
+                            ForEach(account.library, id: \.id) { ref in
+                                NavigationLink(value: ref) {
+                                    PosterCard(title: ref.name, subtitle: nil, poster: ref.poster)
+                                }
+                                .buttonStyle(CardButtonStyle())
+                            }
+                        }
+                    }
+
                     ForEach(rows) { row in
                         Shelf(title: row.title) {
                             ForEach(row.items) { item in
@@ -118,7 +131,17 @@ struct HomeScreen: View {
             .toolbar(heroItems.isEmpty ? .visible : .hidden, for: .navigationBar)
             .modifier(BrowseDestinations())
             .task(id: addons.revision) { await load() }
-            .refreshable { await load() }
+            .refreshable {
+                await account.sync(addons: addons, watch: watch)
+                await load()
+            }
+            .task {
+                // CI screenshots only: open a title page.
+                if PreviewMode.screen == "detail", path.isEmpty {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    path.append(MetaRef(id: "tt0903747", type: "series", name: "Breaking Bad", poster: nil))
+                }
+            }
         }
     }
 
@@ -496,6 +519,19 @@ struct SearchScreen: View {
         }
         if !Task.isCancelled {
             withAnimation(.easeOut(duration: 0.2)) { results = found }
+        }
+    }
+}
+
+/// Launch-argument hooks used only by the CI screenshot job (`-previewScreen home|detail|stremio|search|player`).
+enum PreviewMode {
+    static let screen = UserDefaults.standard.string(forKey: "previewScreen")
+
+    static var initialTab: Int {
+        switch screen {
+        case "stremio": return 2
+        case "search": return 3
+        default: return 0
         }
     }
 }
