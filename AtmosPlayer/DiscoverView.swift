@@ -410,7 +410,7 @@ struct ContinueCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                RemoteImage(url: entry.ref.background ?? entry.ref.poster, maxPixel: 1000)
+                LandscapeArtwork(candidates: ArtworkURL.landscapeCandidates(for: entry.ref), maxPixel: 1000)
                     .frame(width: width, height: width * 9 / 16)
                 LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 6) {

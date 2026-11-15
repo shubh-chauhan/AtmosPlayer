@@ -143,3 +143,84 @@ struct RemoteImage: View {
             }
     }
 }
+
+extension ArtworkURL {
+    /// Landscape artwork for a video, best first: its own still or backdrop, then Cinemeta's
+    /// episode still and backdrop for IMDb titles, and the poster last.
+    static func landscapeCandidates(for ref: VideoRef) -> [String] {
+        var list: [String] = []
+        if let background = ref.background, !background.contains("/poster/") { list.append(background) }
+        if ref.metaId.hasPrefix("tt") {
+            let parts = ref.videoId.split(separator: ":")
+            if parts.count == 3, Int(parts[1]) != nil, Int(parts[2]) != nil {
+                list.append("https://episodes.metahub.space/\(parts[0])/\(parts[1])/\(parts[2])/w780.jpg")
+            }
+            list.append("https://images.metahub.space/background/medium/\(ref.metaId)/img")
+        }
+        if let background = ref.background { list.append(background) }
+        if let poster = ref.poster { list.append(poster) }
+        var seen = Set<String>()
+        return list.filter { seen.insert($0).inserted }
+    }
+}
+
+/// A 16:9 picture from the first candidate that loads. A portrait image (a poster) is shown
+/// whole over a blurred copy of itself instead of being cropped to a strip.
+struct LandscapeArtwork: View {
+    let candidates: [String]
+    var maxPixel: Int = 1000
+
+    @State private var image: UIImage?
+
+    init(candidates: [String], maxPixel: Int = 1000) {
+        self.candidates = candidates
+        self.maxPixel = maxPixel
+        for candidate in candidates {
+            if let url = ArtworkURL.best(candidate, maxPixel: maxPixel),
+               let hit = ImagePipeline.shared.cached(url, maxPixel: maxPixel) {
+                _image = State(initialValue: hit)
+                break
+            }
+        }
+    }
+
+    var body: some View {
+        Color.clear
+            .overlay {
+                if let image {
+                    if image.size.height > image.size.width {
+                        ZStack {
+                            Image(uiImage: image).resizable().scaledToFill()
+                                .blur(radius: 18).opacity(0.7)
+                            Image(uiImage: image).resizable().scaledToFit()
+                        }
+                        .transition(.opacity)
+                    } else {
+                        Image(uiImage: image).resizable().scaledToFill()
+                            .transition(.opacity)
+                    }
+                } else {
+                    ZStack {
+                        Color.white.opacity(0.08)
+                        Image(systemName: "film").foregroundStyle(.white.opacity(0.3))
+                    }
+                }
+            }
+            .clipped()
+            .task(id: candidates) {
+                for candidate in candidates {
+                    guard let url = ArtworkURL.best(candidate, maxPixel: maxPixel) else { continue }
+                    if let hit = ImagePipeline.shared.cached(url, maxPixel: maxPixel) {
+                        if image !== hit { image = hit }
+                        return
+                    }
+                    if let loaded = await ImagePipeline.shared.image(url, maxPixel: maxPixel) {
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.easeOut(duration: 0.2)) { image = loaded }
+                        return
+                    }
+                    if Task.isCancelled { return }
+                }
+            }
+    }
+}
