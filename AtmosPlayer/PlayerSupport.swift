@@ -545,6 +545,13 @@ struct PlayerSettingsPanel: View {
 enum VideoPreferences {
     static let dolbyVisionKey = "video.dolbyVision"
     static var dolbyVisionOn: Bool { UserDefaults.standard.object(forKey: dolbyVisionKey) as? Bool ?? true }
+
+    /// HDR10 tone mapping target in nits; 0 (the default) is off.
+    static let toneMapKey = "video.toneMapPeak"
+    static var toneMapPeak: Double? {
+        let value = UserDefaults.standard.integer(forKey: toneMapKey)
+        return value > 0 ? Double(value) : nil
+    }
 }
 
 // MARK: - Chapters

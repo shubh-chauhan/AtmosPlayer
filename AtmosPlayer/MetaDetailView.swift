@@ -16,6 +16,7 @@ struct MetaDetailView: View {
     @State private var loading = true
     @State private var season: Int = 1
     @State private var expandedDescription = false
+    @State private var similar: [MetaPreview] = []
 
     private let heroHeight: CGFloat = 540
 
@@ -82,12 +83,28 @@ struct MetaDetailView: View {
                 hero
                 VStack(alignment: .leading, spacing: 26) {
                     descriptionBlock
+                    if let meta {
+                        RatingsRow(meta: meta)
+                    }
                     if isSeries && !orderedVideos.isEmpty {
                         seasonPicker
                         episodeShelf
                     }
                     if loading && meta == nil {
                         ProgressView().frame(maxWidth: .infinity)
+                    }
+                    if let meta, !(meta.cast.isEmpty && meta.directors.isEmpty && meta.writers.isEmpty) {
+                        CastShelf(meta: meta)
+                    }
+                    if !similar.isEmpty {
+                        Shelf(title: "More Like This") {
+                            ForEach(similar) { item in
+                                NavigationLink(value: MetaRef(item)) {
+                                    PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster)
+                                }
+                                .buttonStyle(CardButtonStyle())
+                            }
+                        }
                     }
                     infoBlock
                 }
@@ -101,6 +118,9 @@ struct MetaDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .task(id: meta?.id) {
+            if let meta, similar.isEmpty { similar = await SimilarTitles.find(for: meta) }
+        }
         .navigationDestination(item: $streamsRoute) { route in
             StreamsView(video: route.video, queue: route.queue)
         }
@@ -270,6 +290,7 @@ struct MetaDetailView: View {
                 if let released = meta.releaseInfo { infoRow("Released", released) }
                 if let runtime = meta.runtime { infoRow("Runtime", runtime) }
                 if let rating = meta.imdbRating { infoRow("IMDb", rating) }
+                if let country = meta.country, !country.isEmpty { infoRow("Country", country) }
                 if isSeries { infoRow("Episodes", "\(orderedVideos.count)") }
             }
             .padding(.horizontal, 20)

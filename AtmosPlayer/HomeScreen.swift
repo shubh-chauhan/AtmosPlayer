@@ -96,6 +96,14 @@ struct HomeScreen: View {
             .task(id: watch.entries.first?.ref.metaId) {
                 await feed.loadSuggestion(from: watch.entries.first)
             }
+            .task(id: coordinator.pendingResume) {
+                guard let id = coordinator.pendingResume else { return }
+                coordinator.pendingResume = nil
+                if let entry = watch.entries.first(where: { $0.ref.videoId == id }) {
+                    path = NavigationPath()
+                    await resume(entry.ref)
+                }
+            }
             .refreshable {
                 await account.sync(addons: addons, watch: watch)
                 await feed.load(force: true)

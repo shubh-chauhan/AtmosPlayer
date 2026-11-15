@@ -14,9 +14,16 @@ targets:
     platform: iOS
     sources:
       - AtmosPlayer
+      - Shared
     dependencies:
       - package: EngineBundle
         product: EngineBundle
+      - target: AtmosWidgets
+    entitlements:
+      path: AtmosPlayer/AtmosPlayer.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.atmosplayer.app
     scheme: {}
     info:
       path: AtmosPlayer/Info.plist
@@ -30,6 +37,7 @@ targets:
           NSAllowsArbitraryLoads: true
         UIBackgroundModes:
           - audio
+        NSSupportsLiveActivities: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations:
@@ -57,3 +65,36 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         TEST_MEDIA_BASE: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  # Continue Watching widget and the playback Live Activity.
+  AtmosWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - AtmosWidgets
+      - Shared
+    info:
+      path: AtmosWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Atmos Player
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: AtmosWidgets/AtmosWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.atmosplayer.app
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.atmosplayer.app.widgets
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: NO

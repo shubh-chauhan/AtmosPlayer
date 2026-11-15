@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import EngineBundle
 
 /// One engine for the whole app (AetherEngine's rule). Created once at launch.
@@ -128,11 +129,22 @@ struct RootView: View {
         // atmosplayer://play?url=<percent-encoded link>, for handing a link over from another app.
         .onOpenURL { incoming in
             guard incoming.scheme == "atmosplayer",
-                  let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false),
-                  let value = components.queryItems?.first(where: { $0.name == "url" })?.value,
+                  let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false) else { return }
+            // atmosplayer://resume?id=<video id>, from the Continue Watching widget.
+            if components.host == "resume",
+               let id = components.queryItems?.first(where: { $0.name == "id" })?.value {
+                tab = 0
+                coordinator.pendingResume = id
+                return
+            }
+            guard let value = components.queryItems?.first(where: { $0.name == "url" })?.value,
                   let target = URL(string: value) else { return }
             history.add(target)
             coordinator.play(PlayItem(url: target))
+        }
+        // Keep the home-screen widget in step with Continue Watching.
+        .onReceive(watch.$entries.debounce(for: .seconds(2), scheduler: RunLoop.main)) { entries in
+            WidgetBridge.update(entries)
         }
     }
 }

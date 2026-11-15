@@ -234,6 +234,11 @@ struct DebugOverlay: View {
                     if let conversion = engine.dolbyVisionConversion {
                         row("Dolby Vision", String(describing: conversion))
                     }
+                    if let processing = engine.activeVideoProcessing {
+                        row("Tone map", processing.disabledReason.map { "Off: \($0)" }
+                            ?? "\(Int(processing.sourcePeakNits)) → \(Int(processing.targetPeakNits)) nits",
+                            highlight: processing.disabledReason == nil)
+                    }
                     row("Screen", screenSummary)
                     row("Path", "\(engine.videoRoute.rawValue) · \(engine.activeVideoDecoder ?? "-")")
                 }

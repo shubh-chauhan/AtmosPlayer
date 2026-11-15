@@ -42,6 +42,19 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia"
 
+      - name: Ad-hoc sign with entitlements
+        # The build is unsigned; signing it ad hoc records the App Group the widget shares with the
+        # app, which Sideloadly carries over when it signs for your Apple ID.
+        run: |
+          APP=build/Build/Products/Release-iphoneos/AtmosPlayer.app
+          if [ -d "$APP/Frameworks" ]; then
+            find "$APP/Frameworks" -maxdepth 1 \( -name '*.framework' -o -name '*.dylib' \) -exec codesign --force --sign - {} \;
+          fi
+          codesign --force --sign - --entitlements AtmosWidgets/AtmosWidgets.entitlements "$APP/PlugIns/AtmosWidgets.appex"
+          codesign --force --sign - --entitlements AtmosPlayer/AtmosPlayer.entitlements "$APP"
+          codesign -d --entitlements - "$APP" | head -20
+          ls "$APP/PlugIns"
+
       - name: Package .ipa
         run: |
           APP=build/Build/Products/Release-iphoneos/AtmosPlayer.app

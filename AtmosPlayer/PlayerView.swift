@@ -32,6 +32,13 @@ struct PlayerView: View {
     @State private var hideTask: Task<Void, Never>?
     /// A menu was opened: keep the controls up (hiding them closes the menu mid-tap).
     @State private var menuHeld = false
+    // Swipe for brightness / volume, hold for 2x.
+    @State private var hud: AdjustmentHUD?
+    @State private var swipeKind: SwipeAdjustment?
+    @State private var swipeStart = 0.0
+    @State private var hudHideTask: Task<Void, Never>?
+    @State private var boosting = false
+    @State private var rateBeforeBoost: Float = 1
     @State private var countdownTask: Task<Void, Never>?
     @State private var sidePanel: PlayerSidePanel?
     @State private var fill = false
@@ -87,7 +94,25 @@ struct PlayerView: View {
                                 background: subtitleBackground,
                                 lifted: showControls && !locked)
 
-                gestureLayer(width: geo.size.width)
+                HiddenVolumeView()
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+
+                gestureLayer(size: geo.size)
+
+                VStack(spacing: 10) {
+                    if boosting {
+                        SpeedBoostPill().transition(.scale(scale: 0.85).combined(with: .opacity))
+                    }
+                    if let hud {
+                        AdjustmentHUDView(hud: hud).transition(.scale(scale: 0.9).combined(with: .opacity))
+                    }
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.top, 22)
+                .allowsHitTesting(false)
+                .animation(.spring(response: 0.3, dampingFraction: 0.85), value: boosting)
+                .animation(.spring(response: 0.3, dampingFraction: 0.85), value: hud == nil)
 
                 if !starting {
                     BufferingIndicator(engine: engine)
@@ -143,6 +168,8 @@ struct PlayerView: View {
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
         .task(id: item.id) {
+            PlaybackRemote.shared.attach(engine: engine, title: item.watch?.name ?? item.displayTitle,
+                                         subtitle: item.watch?.episodeLabel)
             await load()
             await saveWhilePlaying()
         }
@@ -159,6 +186,7 @@ struct PlayerView: View {
             countdownTask?.cancel()
             torrent.stop()
             pip.stop()
+            PlaybackRemote.shared.detach()
             engine.stop()
             UIApplication.shared.isIdleTimerDisabled = false
             OrientationLock.set(AppDelegate.defaultMask)
@@ -216,8 +244,9 @@ struct PlayerView: View {
 
     // MARK: Gestures
 
-    private func gestureLayer(width: CGFloat) -> some View {
-        Color.clear
+    private func gestureLayer(size: CGSize) -> some View {
+        let width = size.width
+        return Color.clear
             .contentShape(Rectangle())
             .gesture(
                 SpatialTapGesture(count: 2)
@@ -235,6 +264,65 @@ struct PlayerView: View {
                         setFill(value.magnification > 1)
                     }
             )
+            // Swipe up / down: brightness on the left half, volume on the right.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 14)
+                    .onChanged { value in swipeChanged(value, size: size) }
+                    .onEnded { _ in swipeEnded() }
+            )
+            // Hold anywhere: 2x until you let go.
+            .onLongPressGesture(minimumDuration: 0.45, maximumDistance: 14) {
+                startBoost()
+            } onPressingChanged: { pressing in
+                if !pressing { endBoost() }
+            }
+    }
+
+    private func swipeChanged(_ value: DragGesture.Value, size: CGSize) {
+        guard !locked, !boosting, sidePanel == nil else { return }
+        if swipeKind == nil {
+            // Only a mostly vertical swipe away from the very top / bottom edges counts.
+            let dx = abs(value.translation.width), dy = abs(value.translation.height)
+            guard dy > dx * 1.4,
+                  value.startLocation.y > 40, value.startLocation.y < size.height - 40 else { return }
+            let kind: SwipeAdjustment = value.startLocation.x < size.width / 2 ? .brightness : .volume
+            swipeKind = kind
+            swipeStart = kind == .brightness ? DeviceLevels.shared.brightness : DeviceLevels.shared.volume
+            hudHideTask?.cancel()
+        }
+        guard let kind = swipeKind else { return }
+        // A swipe across 60 % of the screen's height goes from 0 to full.
+        let level = min(max(swipeStart - value.translation.height / (size.height * 0.6), 0), 1)
+        switch kind {
+        case .brightness: DeviceLevels.shared.brightness = level
+        case .volume: DeviceLevels.shared.volume = level
+        }
+        hud = AdjustmentHUD(kind: kind, value: level)
+    }
+
+    private func swipeEnded() {
+        guard swipeKind != nil else { return }
+        swipeKind = nil
+        hudHideTask?.cancel()
+        hudHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard !Task.isCancelled else { return }
+            hud = nil
+        }
+    }
+
+    private func startBoost() {
+        guard !locked, !boosting, status.state == .playing, sidePanel == nil else { return }
+        rateBeforeBoost = speed
+        boosting = true
+        engine.setRate(2)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    private func endBoost() {
+        guard boosting else { return }
+        boosting = false
+        engine.setRate(rateBeforeBoost)
     }
 
     private func toggleControls() {
@@ -533,6 +621,10 @@ struct PlayerView: View {
         options.dolbyVisionHandling = VideoPreferences.dolbyVisionOn ? .automatic : .baseLayerOnly
         // Sound: TrueHD Atmos and DTS:X keep their heights (7.1.4, spatialised on AirPods).
         options.objectAudioRendering = AudioPreferences.objectAudioOn ? .render(.l714) : .off
+        // Optional: map HDR10 mastered brighter than this screen to its real peak.
+        if let peak = VideoPreferences.toneMapPeak {
+            options.videoProcessing = VideoProcessingOptions(targetPeakNits: peak)
+        }
         let resume = item.startOver ? nil
             : item.watch.flatMap { watch.resumePosition(for: $0.videoId) }.flatMap { $0 > 0 ? $0 : nil }
 
@@ -599,7 +691,10 @@ struct PlayerView: View {
     private func skip(_ delta: Double, flash: Bool) {
         var target = max(engine.clock.currentTime + delta, 0)
         if engine.duration > 0 { target = min(target, max(engine.duration - 1, 0)) }
-        Task { await engine.seek(to: target) }
+        Task {
+            await engine.seek(to: target)
+            PlaybackRemote.shared.refresh()
+        }
         if flash {
             let previous = (seekFlash?.forward == (delta > 0)) ? (seekFlash?.seconds ?? 0) : 0
             let flashValue = SeekFlash(forward: delta > 0, seconds: previous + abs(delta))

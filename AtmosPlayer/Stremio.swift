@@ -253,6 +253,12 @@ struct StremioMeta: Decodable {
     let runtime: String?
     let genres: [String]
     let videos: [Video]
+    /// People and awards (Cinemeta fills these; other addons may not).
+    let cast: [String]
+    let directors: [String]
+    let writers: [String]
+    let awards: String?
+    let country: String?
 
     struct Video: Decodable, Identifiable, Hashable {
         let id: String
@@ -301,6 +307,11 @@ struct StremioMeta: Decodable {
         runtime = c.lossyString(AnyKey("runtime"))
         genres = c.stringArray(AnyKey("genres")) ?? c.stringArray(AnyKey("genre")) ?? []
         videos = c.lossyArray(Video.self, AnyKey("videos"))
+        cast = c.stringArray(AnyKey("cast")) ?? []
+        directors = c.stringArray(AnyKey("director")) ?? []
+        writers = c.stringArray(AnyKey("writer")) ?? []
+        awards = c.lossyString(AnyKey("awards"))
+        country = c.lossyString(AnyKey("country"))
     }
 }
 

@@ -57,6 +57,9 @@ struct BrowseDestinations: ViewModifier {
             .navigationDestination(for: CatalogRoute.self) { route in
                 CatalogGridScreen(route: route)
             }
+            .navigationDestination(for: PersonRoute.self) { route in
+                PersonScreen(route: route)
+            }
     }
 }
 

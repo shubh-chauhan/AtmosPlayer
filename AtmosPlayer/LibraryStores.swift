@@ -312,6 +312,8 @@ final class WatchStore: ObservableObject {
 @MainActor
 final class PlayerCoordinator: ObservableObject {
     @Published var current: PlayItem?
+    /// A Continue Watching item the widget asked to resume (its video id).
+    @Published var pendingResume: String?
 
     func play(_ item: PlayItem) {
         current = item

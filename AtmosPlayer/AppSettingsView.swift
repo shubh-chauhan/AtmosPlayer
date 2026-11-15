@@ -89,6 +89,7 @@ struct AppSettingsView: View {
     @AppStorage(Prefs.audioLanguage) private var audioLanguage = "device"
     @AppStorage(Prefs.objectAudio) private var objectAudio = true
     @AppStorage(VideoPreferences.dolbyVisionKey) private var dolbyVision = true
+    @AppStorage(VideoPreferences.toneMapKey) private var toneMapPeak = 0
     @AppStorage(Prefs.subtitleLanguage) private var subtitleLanguage = "off"
     @AppStorage(Prefs.subtitleScale) private var subtitleScale = 1.0
     @AppStorage(Prefs.subtitleBackground) private var subtitleBackground = true
@@ -131,10 +132,17 @@ struct AppSettingsView: View {
 
                 Section {
                     Toggle("Dolby Vision", isOn: $dolbyVision)
+                    Picker("HDR10 tone mapping", selection: $toneMapPeak) {
+                        Text("Off").tag(0)
+                        Text("1000 nits").tag(1000)
+                        Text("1200 nits").tag(1200)
+                        Text("1600 nits (Pro iPhones)").tag(1600)
+                        Text("2000 nits").tag(2000)
+                    }
                 } header: {
                     Text("Video")
                 } footer: {
-                    Text("Dolby Vision, HDR10 and HLG play in HDR on this iPhone. Turn Dolby Vision off only if a file's colours look wrong; it then plays its HDR10 picture.")
+                    Text("Dolby Vision, HDR10 and HLG play in HDR on this iPhone. Turn Dolby Vision off only if a file's colours look wrong; it then plays its HDR10 picture.\n\nTone mapping keeps detail in HDR10 films mastered brighter than your screen (often 4000 nits) by mapping them to its real peak. Pick your iPhone's HDR peak brightness. Those films then play on the engine's own renderer: Picture in Picture is unavailable and E-AC-3 Atmos plays as its 5.1/7.1 bed. Dolby Vision, HDR10+ and HLG are not affected.")
                 }
 
                 Section("Subtitles") {

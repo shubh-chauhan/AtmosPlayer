@@ -22,7 +22,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/superuser404notfound/AetherEngine",
-            from: "7.67.1",
+            from: "7.68.0",
             traits: ["TrueHDObjectAudio", "DTSXObjectAudio", "DolbyVisionFelCurves", "DolbyVisionStillReshaping"]
         ),
     ],
