@@ -381,7 +381,7 @@ private struct ProgressBar: View {
             .frame(height: 4)
             .overlay(alignment: .leading) {
                 GeometryReader { geo in
-                    Capsule().fill(Brand.gradient).frame(width: geo.size.width * max(progress, 0.02))
+                    Capsule().fill(.white).frame(width: geo.size.width * max(progress, 0.02))
                 }
             }
     }

@@ -265,7 +265,11 @@ struct DebugOverlay: View {
         var parts: [String] = []
         if DisplayCapabilities.dolbyVision { parts.append("Dolby Vision") }
         if DisplayCapabilities.hdr { parts.append("HDR10 / HLG") }
-        return parts.isEmpty ? "SDR" : parts.joined(separator: " · ")
+        var text = parts.isEmpty ? "SDR" : parts.joined(separator: " · ")
+        let headroom = DisplayCapabilities.headroomNow
+        text += headroom > 1.05 ? String(format: " · HDR on now (%.1f×)", headroom) : " · HDR not engaged"
+        if DisplayCapabilities.lowPowerMode { text += " · Low Power Mode turns HDR off" }
+        return text
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {

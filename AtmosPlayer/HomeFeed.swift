@@ -40,6 +40,16 @@ enum Cinemeta {
         return items
     }
 
+    /// Title search (Cinemeta's "search" extra on its Popular catalog).
+    static func search(type: String, _ text: String) async -> [MetaPreview] {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+        guard let encoded = text.addingPercentEncoding(withAllowedCharacters: allowed),
+              let url = URL(string: "\(base)/catalog/\(type)/top/search=\(encoded).json"),
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+        return decode(data) ?? []
+    }
+
     static func cachedCatalog(type: String, id: String, genre: String? = nil) -> [MetaPreview]? {
         guard let url = catalogURL(type: type, id: id, genre: genre),
               let data = HomeDiskCache.load(for: url) else { return nil }

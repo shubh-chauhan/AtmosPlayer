@@ -191,94 +191,143 @@ typealias PosterImage = RemoteImage
 
 struct SearchScreen: View {
     @EnvironmentObject private var addons: AddonStore
+    @ObservedObject private var feed = HomeFeed.shared
 
     @State private var query = ""
     @State private var results: [CatalogRow] = []
-    @State private var searching = false
+    @State private var pending = 0
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+
+    private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    ForEach(results) { row in
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(row.title).font(.title3.bold()).foregroundStyle(.white)
-                            LazyVGrid(columns: columns, spacing: 16) {
-                                ForEach(row.items) { item in
-                                    NavigationLink(value: MetaRef(item)) {
-                                        PosterCard(title: item.name, subtitle: item.releaseInfo,
-                                                   poster: item.poster, width: 104)
+                LazyVStack(alignment: .leading, spacing: 26) {
+                    if trimmed.isEmpty {
+                        idleContent
+                    } else {
+                        ForEach(results) { row in
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(row.title).font(.title3.bold()).foregroundStyle(.white)
+                                LazyVGrid(columns: columns, spacing: 16) {
+                                    ForEach(row.items) { item in
+                                        NavigationLink(value: MetaRef(item)) {
+                                            PosterCard(title: item.name, subtitle: item.releaseInfo,
+                                                       poster: item.poster, width: 104)
+                                        }
+                                        .buttonStyle(CardButtonStyle())
                                     }
-                                    .buttonStyle(CardButtonStyle())
                                 }
                             }
+                            .transition(.opacity)
                         }
-                    }
-                    if results.isEmpty {
-                        Group {
-                            if searching {
+                        if pending > 0 {
+                            HStack(spacing: 10) {
                                 ProgressView()
-                            } else if query.isEmpty {
-                                ContentUnavailableView("Search", systemImage: "magnifyingglass",
-                                                       description: Text("Movies and series from your addons' catalogs."))
-                            } else {
-                                ContentUnavailableView.search(text: query)
+                                Text(results.isEmpty ? "Searching…" : "Still asking your addons…")
+                                    .font(.footnote).foregroundStyle(.secondary)
                             }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, results.isEmpty ? 80 : 0)
+                        } else if results.isEmpty {
+                            ContentUnavailableView.search(text: trimmed)
+                                .padding(.top, 60)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 80)
                     }
                 }
-                .padding(.horizontal, 20)
                 .padding(.bottom, 30)
             }
             .background(Color.black)
-            .navigationTitle("Search")
+            .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.immediately)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "Movies & Series")
+            .navigationTitle("Search")
+            .searchable(text: $query, prompt: "Movies, series, people")
+            .autocorrectionDisabled()
             .modifier(BrowseDestinations())
-            .task(id: query) { await search() }
+            .task(id: trimmed) { await search(trimmed) }
+            .task { await feed.load() }
         }
     }
 
-    private func search() async {
-        let text = query.trimmingCharacters(in: .whitespaces)
+    /// Before typing: genres and what's popular, like the TV app's Search tab.
+    @ViewBuilder
+    private var idleContent: some View {
+        GenreBrowser()
+            .padding(.top, 8)
+        if let popular = feed.top.first(where: { $0.id == "top-movies" }) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Popular Right Now").font(.title3.bold()).foregroundStyle(.white)
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(popular.items) { item in
+                        NavigationLink(value: MetaRef(item)) {
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: 104)
+                        }
+                        .buttonStyle(CardButtonStyle())
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    /// Cinemeta answers first (it is fast and covers everything on IMDb); each addon's results
+    /// appear as soon as that addon answers, so a slow one never holds the screen.
+    private func search(_ text: String) async {
         guard !text.isEmpty else {
             results = []
+            pending = 0
             return
         }
         // Wait until typing pauses; a newer keystroke cancels this task.
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        try? await Task.sleep(nanoseconds: 350_000_000)
         if Task.isCancelled { return }
-        searching = true
-        defer { searching = false }
 
-        var jobs: [(String, String, InstalledAddon, StremioCatalog)] = []
-        for addon in addons.addons {
+        struct Job: Sendable {
+            let order: Int
+            let id: String
+            let title: String
+            let run: @Sendable () async -> [MetaPreview]
+        }
+        var jobs: [Job] = [
+            Job(order: 0, id: "cinemeta/movie", title: "Movies") { await Cinemeta.search(type: "movie", text) },
+            Job(order: 1, id: "cinemeta/series", title: "Series") { await Cinemeta.search(type: "series", text) },
+        ]
+        let others = addons.addons.filter { !$0.transportURL.contains("v3-cinemeta.strem.io") }
+        let named = others.filter { addon in addon.manifest.catalogs.contains { $0.isSearchable } }.count > 1
+        for addon in others {
             for catalog in addon.manifest.catalogs where catalog.isSearchable {
-                jobs.append(("\(addon.id)/\(catalog.type)/\(catalog.id)/search",
-                             CatalogLoader.typeLabel(catalog.type), addon, catalog))
+                var title = "\(catalog.name ?? CatalogLoader.typeLabel(catalog.type))"
+                if named || title.isEmpty { title = "\(addon.manifest.name) · \(CatalogLoader.typeLabel(catalog.type))" }
+                jobs.append(Job(order: jobs.count, id: "\(addon.id)/\(catalog.type)/\(catalog.id)", title: title) {
+                    (try? await StremioClient.catalog(addon, catalog, search: text)) ?? []
+                })
             }
         }
-        let found = await withTaskGroup(of: (Int, CatalogRow?).self) { group in
-            for (index, job) in jobs.enumerated() {
+
+        results = []
+        pending = jobs.count
+        var arrived: [(Int, CatalogRow)] = []
+        await withTaskGroup(of: (Int, CatalogRow?).self) { group in
+            for job in jobs {
                 group.addTask {
-                    let items = (try? await StremioClient.catalog(job.2, job.3, search: text)) ?? []
-                    return (index, items.isEmpty ? nil : CatalogRow(id: job.0, title: job.1, items: items))
+                    let items = await job.run()
+                    return (job.order, items.isEmpty ? nil : CatalogRow(id: job.id, title: job.title, items: items))
                 }
             }
-            var collected: [(Int, CatalogRow)] = []
-            for await (index, row) in group {
-                if let row { collected.append((index, row)) }
+            for await (order, row) in group {
+                if Task.isCancelled { group.cancelAll(); return }
+                pending -= 1
+                if let row {
+                    arrived.append((order, row))
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        results = arrived.sorted { $0.0 < $1.0 }.map { $0.1 }
+                    }
+                }
             }
-            return collected.sorted { $0.0 < $1.0 }.map { $0.1 }
         }
-        if !Task.isCancelled {
-            withAnimation(.easeOut(duration: 0.2)) { results = found }
-        }
+        if !Task.isCancelled { pending = 0 }
     }
 }
 

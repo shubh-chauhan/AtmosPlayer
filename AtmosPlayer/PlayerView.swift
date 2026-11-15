@@ -353,9 +353,21 @@ struct PlayerView: View {
                             .foregroundStyle(.white.opacity(0.7))
                             .lineLimit(1)
                     }
-                    Text(item.watch?.name ?? item.displayTitle)
-                        .font(.title3.weight(.bold))
-                        .lineLimit(1)
+                    HStack(spacing: 8) {
+                        Text(item.watch?.name ?? item.displayTitle)
+                            .font(.title3.weight(.bold))
+                            .lineLimit(1)
+                        if let badge = status.formatBadge {
+                            Text(badge.text)
+                                .font(.caption2.weight(.heavy))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .foregroundStyle(badge.warning ? Color.black : Color.white)
+                                .background(badge.warning ? Color.orange : Color.white.opacity(0.18),
+                                            in: RoundedRectangle(cornerRadius: 4))
+                                .onTapGesture { openPanel(.details) }
+                        }
+                    }
                 }
                 Spacer(minLength: 12)
                 HStack(spacing: 10) {

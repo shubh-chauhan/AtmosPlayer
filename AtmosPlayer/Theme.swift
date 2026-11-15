@@ -15,9 +15,41 @@ enum Brand {
 /// a switch that's on look white-on-white.
 struct BrandToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        Toggle(configuration)
-            .toggleStyle(.switch)
-            .tint(Brand.accent)
+        BrandSwitch(configuration: configuration)
+    }
+}
+
+/// Drawn by hand rather than the system switch: on Liquid Glass the system one picks up the
+/// player's white tint and reads white-on-white whether it is on or off.
+private struct BrandSwitch: View {
+    let configuration: ToggleStyleConfiguration
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) { configuration.isOn.toggle() }
+            UISelectionFeedbackGenerator().selectionChanged()
+        } label: {
+            HStack(spacing: 12) {
+                configuration.label
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                    Capsule()
+                        .fill(configuration.isOn ? Brand.accent : Color.white.opacity(0.22))
+                    Circle()
+                        .fill(.white)
+                        .padding(2.5)
+                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                }
+                .frame(width: 51, height: 31)
+                .opacity(isEnabled ? 1 : 0.45)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 import Combine
 import EngineBundle
 
@@ -16,6 +17,9 @@ final class PlayerStatus: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var hasChapters = false
     @Published private(set) var hasDuration = false
+    /// What the screen shows, and what the file is.
+    @Published private(set) var videoFormat: VideoFormat = .sdr
+    @Published private(set) var sourceFormat: VideoFormat = .sdr
 
     private var cancellables: Set<AnyCancellable> = []
     private weak var engine: AetherEngine?
@@ -44,6 +48,30 @@ final class PlayerStatus: ObservableObject {
             .sink { [weak self] in self?.hasChapters = $0 }.store(in: &cancellables)
         engine.$duration.map { $0 > 0 }.removeDuplicates().receive(on: RunLoop.main)
             .sink { [weak self] in self?.hasDuration = $0 }.store(in: &cancellables)
+        engine.$videoFormat.removeDuplicates().receive(on: RunLoop.main)
+            .sink { [weak self] in self?.videoFormat = $0 }.store(in: &cancellables)
+        engine.$sourceVideoFormat.removeDuplicates().receive(on: RunLoop.main)
+            .sink { [weak self] in self?.sourceFormat = $0 }.store(in: &cancellables)
+    }
+
+    /// "DOLBY VISION" / "HDR10" … for the badge next to the title; nil for plain SDR.
+    var formatBadge: (text: String, warning: Bool)? {
+        if sourceFormat != .sdr && videoFormat == .sdr {
+            return ("\(VideoFormatName.short(sourceFormat)) AS SDR", true)
+        }
+        return videoFormat == .sdr ? nil : (VideoFormatName.short(videoFormat), false)
+    }
+}
+
+enum VideoFormatName {
+    static func short(_ format: VideoFormat) -> String {
+        switch format {
+        case .sdr: return "SDR"
+        case .hdr10: return "HDR10"
+        case .hdr10Plus: return "HDR10+"
+        case .dolbyVision: return "DOLBY VISION"
+        case .hlg: return "HLG"
+        }
     }
 }
 
@@ -59,6 +87,15 @@ enum DisplayCapabilities {
     static var hdr: Bool {
         AVPlayer.eligibleForHDRPlayback
     }
+
+    /// How much brighter than white the screen can go right now (1.0 = no HDR at the moment).
+    @MainActor
+    static var headroomNow: Double {
+        Double(UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }.first?.currentEDRHeadroom ?? 1)
+    }
+
+    /// iOS turns HDR video off in Low Power Mode.
+    static var lowPowerMode: Bool { ProcessInfo.processInfo.isLowPowerModeEnabled }
 }
 
 // MARK: - Side panels
@@ -128,6 +165,7 @@ struct SidePanelContainer<Content: View>: View {
         }
         .foregroundStyle(.white)
         .tint(.white)
+        .toggleStyle(BrandToggleStyle())
     }
 }
 
