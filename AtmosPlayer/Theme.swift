@@ -19,7 +19,7 @@ struct BrandToggleStyle: ToggleStyle {
     }
 }
 
-/// Drawn by hand rather than the system switch: on Liquid Glass the system one picks up the
+/// The iPhone's green switch, drawn by hand: on Liquid Glass the system one picks up the
 /// player's white tint and reads white-on-white whether it is on or off.
 private struct BrandSwitch: View {
     let configuration: ToggleStyleConfiguration
@@ -35,7 +35,7 @@ private struct BrandSwitch: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 ZStack(alignment: configuration.isOn ? .trailing : .leading) {
                     Capsule()
-                        .fill(configuration.isOn ? Brand.accent : Color.white.opacity(0.22))
+                        .fill(configuration.isOn ? Color(uiColor: .systemGreen) : Color.white.opacity(0.22))
                     Circle()
                         .fill(.white)
                         .padding(2.5)
