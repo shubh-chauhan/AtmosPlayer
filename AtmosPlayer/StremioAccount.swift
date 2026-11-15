@@ -79,6 +79,7 @@ final class StremioAccount: ObservableObject {
             async let libraryResult = StremioAPI.call("datastoreGet",
                                                       ["authKey": key, "collection": "libraryItem", "ids": [String](), "all": true])
             let (addonJSON, libraryJSON) = try await (addonResult, libraryResult)
+            guard authKey == key else { return }
 
             // Addons, in the account's order.
             var collection: [(url: String, manifest: Data)] = []
@@ -111,6 +112,24 @@ final class StremioAccount: ObservableObject {
     }
 
     // MARK: Push to Stremio
+
+    /// Takes a title off Stremio's Continue Watching (what Stremio's own "dismiss" does).
+    func clearProgress(_ ref: VideoRef) async {
+        guard let key = authKey else { return }
+        do {
+            let existing = try await StremioAPI.call("datastoreGet",
+                                                     ["authKey": key, "collection": "libraryItem", "ids": [ref.metaId], "all": false])
+            guard var item = (existing as? [Any])?.first as? [String: Any],
+                  var state = item["state"] as? [String: Any] else { return }
+            state["timeOffset"] = 0
+            item["state"] = state
+            item["_mtime"] = StremioAPI.timestamp(Date())
+            _ = try await StremioAPI.call("datastorePut",
+                                          ["authKey": key, "collection": "libraryItem", "changes": [item]])
+        } catch {
+            LogStore.shared.append("Stremio dismiss failed: \(error.localizedDescription)")
+        }
+    }
 
     /// Called when the player closes, so Stremio's Continue Watching matches where you stopped.
     func pushProgress(_ ref: VideoRef, position: Double, duration: Double) async {

@@ -27,9 +27,10 @@ struct HomeView: View {
                 }
 
                 Section("Play a link") {
-                    TextField("https://… (.mkv, .mp4, .m3u8)", text: $urlText, axis: .vertical)
-                        .lineLimit(1...4)
+                    TextField("https://… (.mkv, .mp4, .m3u8)", text: $urlText)
                         .keyboardType(.URL)
+                        .submitLabel(.go)
+                        .onSubmit { playTypedURL() }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     HStack {
@@ -42,6 +43,7 @@ struct HomeView: View {
                         Spacer()
                         Button("Play") { playTypedURL() }
                             .buttonStyle(.borderedProminent)
+                            .tint(Brand.accent)
                             .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                     if let message {
@@ -78,6 +80,8 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("Links")
+            .scrollDismissesKeyboard(.immediately)
+            .keyboardDoneButton()
         }
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.item]) { result in
             switch result {

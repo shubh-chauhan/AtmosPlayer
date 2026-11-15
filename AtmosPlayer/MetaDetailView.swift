@@ -6,6 +6,11 @@ struct MetaDetailView: View {
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var watch: WatchStore
     @EnvironmentObject private var favorites: FavoritesStore
+    @EnvironmentObject private var coordinator: PlayerCoordinator
+
+    /// Set to open the stream list from the Play button.
+    @State private var streamsRoute: StreamsRoute?
+    @State private var starting = false
 
     @State private var meta: StremioMeta?
     @State private var loading = true
@@ -21,23 +26,10 @@ struct MetaDetailView: View {
     private var background: String? { meta?.background ?? ref.background ?? meta?.poster ?? ref.poster }
     private var isSeries: Bool { !(meta?.videos.isEmpty ?? true) || ref.type == "series" }
 
-    /// Every episode in watching order: regular seasons first, specials last.
-    private var orderedVideos: [StremioMeta.Video] {
-        (meta?.videos ?? []).sorted { a, b in
-            let sa = a.season == 0 ? Int.max : (a.season ?? 0)
-            let sb = b.season == 0 ? Int.max : (b.season ?? 0)
-            if sa != sb { return sa < sb }
-            return (a.episode ?? 0) < (b.episode ?? 0)
-        }
-    }
-
-    private var seasons: [Int] {
-        var seen: [Int] = []
-        for video in orderedVideos {
-            if let s = video.season, !seen.contains(s) { seen.append(s) }
-        }
-        return seen
-    }
+    /// Every episode in watching order (regular seasons first, specials last), and the season
+    /// list. Worked out once when the meta arrives, not on every scroll frame.
+    @State private var orderedVideos: [StremioMeta.Video] = []
+    @State private var seasons: [Int] = []
 
     private var episodes: [StremioMeta.Video] {
         seasons.isEmpty ? orderedVideos : orderedVideos.filter { $0.season == season }
@@ -57,30 +49,29 @@ struct MetaDetailView: View {
     }
 
     private func route(for video: StremioMeta.Video) -> StreamsRoute {
-        let all = orderedVideos
-        guard let index = all.firstIndex(where: { $0.id == video.id }) else {
-            return StreamsRoute(video: videoRef(video))
-        }
-        let following = all[(index + 1)...]
-            .filter { video.season == 0 || $0.season != 0 }
-            .prefix(40)
-            .map { videoRef($0) }
-        return StreamsRoute(video: videoRef(video), queue: Array(following))
+        let following = EpisodeQueue.following(video.id, in: orderedVideos).map { videoRef($0) }
+        return StreamsRoute(video: videoRef(video), queue: following)
     }
 
-    /// What the big button plays: the episode you were watching, or the first one.
-    private var primary: (route: StreamsRoute, label: String, resume: Bool)? {
+    /// What the big button plays: the episode you were watching (or the next one after the
+    /// last you finished), or the first one. The route is built only when tapped.
+    private var primary: (video: StremioMeta.Video?, label: String)? {
         if isSeries {
-            let entries = watch.entries.filter { $0.ref.metaId == ref.id }
-            if let latest = entries.first,
+            if let latest = watch.entries.first(where: { $0.ref.metaId == ref.id }),
                let video = orderedVideos.first(where: { $0.id == latest.ref.videoId }) {
-                return (route(for: video), "Resume \(video.code ?? "")".trimmingCharacters(in: .whitespaces), true)
+                let verb = latest.position > 0 ? "Resume" : "Play"
+                return (video, "\(verb) \(video.code ?? "")".trimmingCharacters(in: .whitespaces))
             }
             guard let first = orderedVideos.first(where: { $0.season != 0 }) ?? orderedVideos.first else { return nil }
-            return (route(for: first), "Play \(first.code ?? "")".trimmingCharacters(in: .whitespaces), false)
+            return (first, "Play \(first.code ?? "")".trimmingCharacters(in: .whitespaces))
         }
-        let resume = watch.resumePosition(for: movieRef.videoId) != nil
-        return (StreamsRoute(video: movieRef), resume ? "Resume" : "Play", resume)
+        let resume = (watch.resumePosition(for: movieRef.videoId) ?? 0) > 0
+        return (nil, resume ? "Resume" : "Play")
+    }
+
+    private func primaryRoute(_ video: StremioMeta.Video?) -> StreamsRoute {
+        if let video { return route(for: video) }
+        return StreamsRoute(video: movieRef)
     }
 
     // MARK: Body
@@ -110,6 +101,9 @@ struct MetaDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .navigationDestination(item: $streamsRoute) { route in
+            StreamsView(video: route.video, queue: route.queue)
+        }
     }
 
     private var hero: some View {
@@ -153,18 +147,42 @@ struct MetaDetailView: View {
             .multilineTextAlignment(.center)
     }
 
+    /// Play like Stremio: the stream used last time starts straight away; otherwise the list opens.
+    private func start(_ route: StreamsRoute) async {
+        starting = true
+        defer { starting = false }
+        if let item = await QuickPlay.resolve(video: route.video, queue: route.queue, addons: addons) {
+            coordinator.play(item)
+        } else {
+            streamsRoute = route
+        }
+    }
+
     private var actionButtons: some View {
         HStack(spacing: 12) {
             if let primary {
-                NavigationLink(value: primary.route) {
-                    Label(primary.label, systemImage: "play.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .foregroundStyle(.black)
+                Button {
+                    Task { await start(primaryRoute(primary.video)) }
+                } label: {
+                    HStack(spacing: 8) {
+                        if starting {
+                            ProgressView().tint(.black)
+                        } else {
+                            Image(systemName: "play.fill")
+                        }
+                        Text(starting ? "Starting…" : primary.label)
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .foregroundStyle(.black)
                 }
                 .buttonStyle(CardButtonStyle())
+                .disabled(starting)
+                .contextMenu {
+                    Button("Choose Stream…", systemImage: "list.bullet") { streamsRoute = primaryRoute(primary.video) }
+                }
             } else {
                 RoundedRectangle(cornerRadius: 12).fill(.white.opacity(0.15)).frame(height: 50)
             }
@@ -228,7 +246,7 @@ struct MetaDetailView: View {
         ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: 14) {
                 ForEach(episodes) { video in
-                    NavigationLink(value: route(for: video)) {
+                    Button { streamsRoute = route(for: video) } label: {
                         EpisodeCard(video: video, progress: progress(for: video))
                     }
                     .buttonStyle(CardButtonStyle())
@@ -276,6 +294,13 @@ struct MetaDetailView: View {
         defer { loading = false }
         for addon in addons.supporting("meta", type: ref.type, id: ref.id) {
             if let found = try? await StremioClient.meta(addon, type: ref.type, id: ref.id) {
+                let ordered = EpisodeQueue.ordered(found.videos)
+                var seen: [Int] = []
+                for video in ordered {
+                    if let s = video.season, !seen.contains(s) { seen.append(s) }
+                }
+                orderedVideos = ordered
+                seasons = seen
                 withAnimation(.easeOut(duration: 0.25)) { meta = found }
                 break
             }
@@ -331,5 +356,43 @@ struct EpisodeCard: View {
             }
         }
         .frame(width: width, alignment: .leading)
+    }
+}
+
+/// Episode order and "what comes next", shared by the title page and Continue Watching.
+enum EpisodeQueue {
+    static func ordered(_ videos: [StremioMeta.Video]) -> [StremioMeta.Video] {
+        videos.sorted { a, b in
+            let sa = a.season == 0 ? Int.max : (a.season ?? 0)
+            let sb = b.season == 0 ? Int.max : (b.season ?? 0)
+            if sa != sb { return sa < sb }
+            return (a.episode ?? 0) < (b.episode ?? 0)
+        }
+    }
+
+    /// Up to 40 episodes after `videoId`; specials only follow a special.
+    static func following(_ videoId: String, in ordered: [StremioMeta.Video]) -> [StremioMeta.Video] {
+        guard let index = ordered.firstIndex(where: { $0.id == videoId }) else { return [] }
+        let current = ordered[index]
+        return Array(ordered[(index + 1)...]
+            .filter { current.season == 0 || $0.season != 0 }
+            .prefix(40))
+    }
+
+    /// The queue after an episode, fetched from the meta addons (for Continue Watching).
+    @MainActor
+    static func queue(after video: VideoRef, addons: AddonStore) async -> [VideoRef] {
+        guard video.type == "series" else { return [] }
+        for addon in addons.supporting("meta", type: video.type, id: video.metaId) {
+            guard let meta = try? await StremioClient.meta(addon, type: video.type, id: video.metaId) else { continue }
+            let background = meta.background ?? video.background
+            return following(video.videoId, in: ordered(meta.videos)).map { episode in
+                let label = [episode.code, episode.title].compactMap { $0 }.joined(separator: " · ")
+                return VideoRef(type: video.type, metaId: video.metaId, videoId: episode.id, name: video.name,
+                                poster: video.poster, episodeLabel: label.isEmpty ? episode.id : label,
+                                background: episode.thumbnail ?? background)
+            }
+        }
+        return []
     }
 }

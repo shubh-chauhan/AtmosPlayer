@@ -16,21 +16,13 @@ enum StreamResolver {
             var pick: StremioStream?
             if let group = item.bingeGroup {
                 pick = playable.first { $0.bingeGroup == group }
-            }
-            if pick == nil, item.bingeGroup != nil, addon.id == item.addonId {
-                // Same addon but the release changed: prefer one that keeps Atmos.
+            } else if addon.id == item.addonId {
                 pick = playable.first { $0.badges.contains("Atmos") } ?? playable.first
             }
-            if pick == nil { pick = playable.first }
-            if let pick, let url = pick.playableURL {
-                return PlayItem(url: url,
-                                title: next.displayTitle,
-                                headers: pick.requestHeaders,
-                                watch: next,
-                                queue: Array(item.queue.dropFirst()),
-                                addonId: addon.id,
-                                bingeGroup: pick.bingeGroup,
-                                poster: next.poster)
+            if let pick,
+               let resolved = QuickPlay.item(video: next, queue: Array(item.queue.dropFirst()),
+                                             stream: SavedStream(pick, addonId: addon.id, videoId: next.videoId)) {
+                return resolved
             }
         }
         return nil

@@ -17,6 +17,9 @@ struct PlayItem: Identifiable {
     var addonId: String? = nil
     var bingeGroup: String? = nil
     var poster: String? = nil
+    /// The addon stream this came from (remembered for "play the same stream next time",
+    /// and for torrent statistics).
+    var stream: SavedStream? = nil
     /// True for a file picked from the Files app: access must be released when playback ends.
     var securityScoped: Bool = false
 

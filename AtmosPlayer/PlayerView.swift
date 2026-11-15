@@ -3,26 +3,31 @@ import UIKit
 import MediaPlayer
 import AetherEngine
 
-/// Full-screen player: Infuse-style controls over AetherEngine's surface.
+/// Full-screen player in the style of the Apple TV app: glass buttons, a bare centre
+/// transport, the title and a thin timeline at the bottom.
 struct PlayerView: View {
     @ObservedObject var engine: AetherEngine
     @EnvironmentObject private var watch: WatchStore
     @EnvironmentObject private var addons: AddonStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     /// The item playing now. Starts as the one we were opened with; "Next episode" replaces it.
     @State private var item: PlayItem
     @StateObject private var pip = PiPController()
+    @StateObject private var torrent = TorrentStatsMonitor()
 
-    @AppStorage("player.debug") private var showDebug = false
+    @AppStorage("player.debug") private var showStats = false
     @AppStorage("subtitle.scale") private var subtitleScale = 1.0
     @AppStorage("subtitle.background") private var subtitleBackground = true
     @AppStorage("player.skipSeconds") private var skipSeconds = 10.0
+    @AppStorage("player.showRemaining") private var showRemaining = true
 
     @State private var showControls = true
     @State private var locked = false
     @State private var scrubbing = false
     @State private var hideTask: Task<Void, Never>?
+    @State private var countdownTask: Task<Void, Never>?
     @State private var panel: PlayerPanel?
     @State private var fill = false
     @State private var speed: Float = 1
@@ -33,7 +38,6 @@ struct PlayerView: View {
     @State private var onlineSubtitles: [AddonSubtitle] = []
     @State private var addedSubtitleURLs: [String: Int] = [:]
     @State private var nextState: NextState = .idle
-    @State private var showRemaining = false
 
     enum NextState: Equatable {
         case idle
@@ -45,6 +49,20 @@ struct PlayerView: View {
     init(item: PlayItem, engine: AetherEngine) {
         _item = State(initialValue: item)
         self.engine = engine
+    }
+
+    /// Until the picture (or, for audio-only, playback) is up, the loading screen shows.
+    private var starting: Bool {
+        loadError == nil
+            && !engine.hasFirstFrameReadyForDisplay
+            && engine.state != .playing
+            && engine.state != .paused
+    }
+
+    /// Playback has really begun, so the position means something.
+    private var hasStarted: Bool {
+        loadError == nil && engine.duration > 0
+            && (engine.hasFirstFrameReadyForDisplay || engine.state == .playing || engine.state == .paused)
     }
 
     var body: some View {
@@ -62,7 +80,9 @@ struct PlayerView: View {
 
                 gestureLayer(width: geo.size.width)
 
-                BufferingIndicator(engine: engine)
+                if !starting {
+                    BufferingIndicator(engine: engine)
+                }
 
                 if let seekFlash {
                     SeekFlashView(flash: seekFlash)
@@ -73,34 +93,51 @@ struct PlayerView: View {
                         .transition(.opacity)
                 }
 
-                if showDebug {
-                    DebugOverlay(engine: engine)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(.top, 70)
-                        .padding(.horizontal, 16)
-                        .allowsHitTesting(false)
-                }
-
-                if showControls {
+                if showControls && !starting {
                     if locked {
                         lockedOverlay
+                            .transition(.opacity)
                     } else {
                         controls
                             .transition(.opacity)
                     }
                 }
 
+                if showStats && !starting {
+                    DebugOverlay(engine: engine, clock: engine.clock, torrent: torrent, item: item) {
+                        withAnimation { showStats = false }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.top, 74)
+                    .padding(.horizontal, 24)
+                    .transition(.opacity)
+                }
+
                 upNextCard
+
+                if starting {
+                    PlayerStartupView(engine: engine, torrent: torrent,
+                                      title: item.watch?.name ?? item.displayTitle,
+                                      subtitle: item.watch?.episodeLabel,
+                                      artwork: item.watch?.background ?? item.poster,
+                                      isTorrent: item.stream?.isTorrent == true,
+                                      onClose: { dismiss() })
+                        .transition(.opacity)
+                }
 
                 if let loadError {
                     errorBanner(loadError)
                 }
             }
+            .animation(.easeInOut(duration: 0.35), value: starting)
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
-        .task(id: item.id) { await load() }
+        .task(id: item.id) {
+            await load()
+            await saveWhilePlaying()
+        }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             OrientationLock.set(.landscape)
@@ -108,15 +145,28 @@ struct PlayerView: View {
             scheduleHide()
         }
         .onDisappear {
-            recordProgress()
+            recordProgress(push: true)
+            hideTask?.cancel()
+            countdownTask?.cancel()
+            torrent.stop()
             pip.stop()
             engine.stop()
             UIApplication.shared.isIdleTimerDisabled = false
-            OrientationLock.set(.all)
+            OrientationLock.set(AppDelegate.defaultMask)
             if item.securityScoped { item.url.stopAccessingSecurityScopedResource() }
         }
+        .onChange(of: scenePhase) { _, phase in
+            // iOS may end the app while it's in the background; save first.
+            if phase == .background { recordProgress(push: true) }
+        }
         .onChange(of: engine.state) { _, state in
-            if state == .ended { startNextCountdown() }
+            if state == .ended {
+                startNextCountdown()
+            } else if case .countdown = nextState {
+                // Seeking back after the end stops the countdown.
+                countdownTask?.cancel()
+                nextState = .idle
+            }
             if state == .playing { scheduleHide() }
         }
         .sheet(item: $panel) { which in
@@ -129,7 +179,7 @@ struct PlayerView: View {
             case .settings:
                 SettingsPanel(engine: engine, speed: $speed, audioDelay: $audioDelay,
                               subtitleOffset: $subtitleOffset, subtitleScale: $subtitleScale,
-                              subtitleBackground: $subtitleBackground, showDebug: $showDebug,
+                              subtitleBackground: $subtitleBackground, showDebug: $showStats,
                               skipSeconds: $skipSeconds)
                     .presentationDetents([.medium, .large])
                     .presentationBackground(.ultraThinMaterial)
@@ -168,7 +218,7 @@ struct PlayerView: View {
     }
 
     private func toggleControls() {
-        withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+        withAnimation(.easeInOut(duration: 0.25)) { showControls.toggle() }
         if showControls { scheduleHide() }
     }
 
@@ -178,8 +228,13 @@ struct PlayerView: View {
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled, engine.state == .playing, !scrubbing, panel == nil else { return }
-            withAnimation(.easeInOut(duration: 0.3)) { showControls = false }
+            withAnimation(.easeInOut(duration: 0.35)) { showControls = false }
         }
+    }
+
+    /// Keeps the controls up while a menu is open (hiding them would close the menu).
+    private func holdControls() {
+        hideTask?.cancel()
     }
 
     private func interacted() {
@@ -191,107 +246,241 @@ struct PlayerView: View {
 
     private var controls: some View {
         ZStack {
-            // Darken top and bottom so white controls read on any picture.
-            VStack(spacing: 0) {
-                LinearGradient(colors: [.black.opacity(0.75), .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 140)
-                Spacer()
-                LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 190)
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+            // Soft shading so white controls read on any picture.
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.55), location: 0),
+                .init(color: .black.opacity(0), location: 0.28),
+                .init(color: .black.opacity(0), location: 0.5),
+                .init(color: .black.opacity(0.8), location: 1),
+            ], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+            centerTransport
 
             VStack(spacing: 0) {
                 topBar
-                Spacer()
-                centerButtons
-                Spacer()
-                bottomBar
+                Spacer(minLength: 0)
+                bottomArea
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
         }
         .foregroundStyle(.white)
         .tint(.white)
     }
 
     private var topBar: some View {
-        HStack(alignment: .center, spacing: 18) {
-            CircleButton(symbol: "xmark") { dismiss() }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.watch?.name ?? item.displayTitle)
-                    .font(.headline)
-                    .lineLimit(1)
-                if let episode = item.watch?.episodeLabel {
-                    Text(episode).font(.subheadline).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
-                }
+        HStack(spacing: 12) {
+            GlassIconButton(symbol: "xmark") { dismiss() }
+            if pip.isPossible {
+                GlassIconButton(symbol: pip.isActive ? "pip.exit" : "pip.enter") { pip.toggle(); interacted() }
             }
             Spacer()
-            if pip.isPossible {
-                CircleButton(symbol: pip.isActive ? "pip.exit" : "pip.enter") { pip.toggle(); interacted() }
-            }
             AirPlayButton()
-                .frame(width: 40, height: 40)
-            CircleButton(symbol: "info.circle") { showDebug.toggle(); interacted() }
+                .frame(width: 44, height: 44)
+                .glass(Circle(), interactive: true)
+            GlassIconButton(symbol: "lock.open.fill") {
+                withAnimation { locked = true }
+                scheduleHide()
+            }
         }
     }
 
-    private var centerButtons: some View {
-        HStack(spacing: 56) {
-            CircleButton(symbol: skipSymbol(back: true), size: 30) { skip(-skipSeconds, flash: false) }
+    private var isBusy: Bool {
+        switch engine.playbackPhase {
+        case .loading, .rebuffering, .seeking, .stalled: return true
+        default: return false
+        }
+    }
+
+    private var centerTransport: some View {
+        HStack(spacing: 70) {
+            Button { skip(-skipSeconds, flash: false) } label: {
+                Image(systemName: skipSymbol(back: true))
+                    .font(.system(size: 34, weight: .regular))
+                    .frame(width: 64, height: 64)
+                    .contentShape(Circle())
+            }
             Button {
                 engine.togglePlayPause()
                 interacted()
             } label: {
                 Image(systemName: engine.state == .playing ? "pause.fill" : "play.fill")
-                    .font(.system(size: 44, weight: .semibold))
+                    .font(.system(size: 54, weight: .regular))
                     .frame(width: 84, height: 84)
-                    .background(.ultraThinMaterial, in: Circle())
+                    .contentShape(Circle())
                     .contentTransition(.symbolEffect(.replace))
+                    // The buffering spinner takes this spot while it shows.
+                    .opacity(isBusy ? 0 : 1)
             }
-            CircleButton(symbol: skipSymbol(back: false), size: 30) { skip(skipSeconds, flash: false) }
+            Button { skip(skipSeconds, flash: false) } label: {
+                Image(systemName: skipSymbol(back: false))
+                    .font(.system(size: 34, weight: .regular))
+                    .frame(width: 64, height: 64)
+                    .contentShape(Circle())
+            }
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .shadow(color: .black.opacity(0.4), radius: 12)
+    }
+
+    private var bottomArea: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let episode = item.watch?.episodeLabel {
+                        Text(episode)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineLimit(1)
+                    }
+                    Text(item.watch?.name ?? item.displayTitle)
+                        .font(.title3.weight(.bold))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 12)
+                HStack(spacing: 10) {
+                    speedMenu
+                    audioSubtitleMenu
+                    if !item.queue.isEmpty {
+                        GlassIconButton(symbol: "forward.end.fill") { Task { await playNext() } }
+                            .disabled(nextState == .resolving)
+                    }
+                    moreMenu
+                }
+            }
+            ScrubBar(engine: engine, clock: engine.clock, scrubbing: $scrubbing,
+                     showRemaining: $showRemaining) { scheduleHide() }
         }
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 10) {
-            ScrubBar(engine: engine, clock: engine.clock, scrubbing: $scrubbing,
-                     showRemaining: $showRemaining) { scheduleHide() }
+    // MARK: Menus
 
-            HStack(spacing: 22) {
-                ControlChip(symbol: "lock.open", label: "Lock") {
-                    withAnimation { locked = true }
-                    scheduleHide()
-                }
-                ControlChip(symbol: fill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                            label: fill ? "Fit" : "Fill") { setFill(!fill); interacted() }
-                Menu {
-                    ForEach(speedOptions, id: \.self) { value in
-                        Button {
-                            setSpeed(value)
-                        } label: {
-                            if value == speed {
-                                Label(speedLabel(value), systemImage: "checkmark")
-                            } else {
-                                Text(speedLabel(value))
-                            }
-                        }
-                    }
-                } label: {
-                    ChipLabel(symbol: "gauge.with.dots.needle.67percent", label: speedLabel(speed))
-                }
-                if !engine.mediaChapters.isEmpty {
-                    ControlChip(symbol: "list.bullet.rectangle", label: "Chapters") { panel = .chapters }
-                }
-                Spacer()
-                ControlChip(symbol: "captions.bubble", label: "Audio & Subtitles") { panel = .tracks }
-                ControlChip(symbol: "slider.horizontal.3", label: "Settings") { panel = .settings }
-                if !item.queue.isEmpty {
-                    ControlChip(symbol: "forward.end.fill", label: "Next") { Task { await playNext() } }
+    private var speedMenu: some View {
+        Menu {
+            Picker("Playback Speed", selection: Binding(get: { speed }, set: { setSpeed($0) })) {
+                ForEach(speedOptions, id: \.self) { value in
+                    Text(speedLabel(value)).tag(value)
                 }
             }
+        } label: {
+            Group {
+                if speed == 1 {
+                    Image(systemName: "gauge.with.dots.needle.67percent")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                } else {
+                    Text(speedLabel(speed))
+                        .font(.system(size: 15, weight: .bold).monospacedDigit())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 4)
+                }
+            }
+            .contentShape(Capsule())
+            .glass(Capsule(), interactive: true)
         }
+        .simultaneousGesture(TapGesture().onEnded { holdControls() })
+    }
+
+    /// Online subtitle tracks this player added; shown under "Online Subtitles", not twice.
+    private var addedTrackIds: Set<Int> {
+        Set(addedSubtitleURLs.filter { $0.key != "__active" }.map(\.value))
+    }
+
+    private var audioSubtitleMenu: some View {
+        Menu {
+            Section("Audio") {
+                if engine.audioTracks.isEmpty {
+                    Text("No audio tracks")
+                }
+                ForEach(engine.audioTracks) { track in
+                    Button {
+                        engine.selectAudioTrack(index: track.id)
+                        interacted()
+                    } label: {
+                        let selected = engine.activeAudioTrackIndex == track.id
+                        let badge = track.isAtmos ? " · Dolby Atmos" : (track.isDTSX ? " · DTS:X" : "")
+                        if selected {
+                            Label(track.name + badge, systemImage: "checkmark")
+                        } else {
+                            Text(track.name + badge)
+                        }
+                        Text(TracksPanel.audioDetail(track))
+                    }
+                }
+            }
+            Section("Subtitles") {
+                Button {
+                    engine.clearSubtitle()
+                    interacted()
+                } label: {
+                    if !engine.isSubtitleActive {
+                        Label("Off", systemImage: "checkmark")
+                    } else {
+                        Text("Off")
+                    }
+                }
+                ForEach(engine.subtitleTracks.filter { !addedTrackIds.contains($0.id) }) { track in
+                    Button {
+                        engine.selectSubtitleTrack(index: track.id)
+                        interacted()
+                    } label: {
+                        if engine.isSubtitleActive && engine.activeSubtitleTrackIndex == track.id {
+                            Label(track.name, systemImage: "checkmark")
+                        } else {
+                            Text(track.name)
+                        }
+                        if let detail = TracksPanel.subtitleDetail(track) { Text(detail) }
+                    }
+                }
+                Button {
+                    panel = .tracks
+                } label: {
+                    Label(onlineSubtitles.isEmpty ? "All Audio & Subtitles…" : "Online Subtitles (\(onlineSubtitles.count))…",
+                          systemImage: "captions.bubble")
+                }
+            }
+        } label: {
+            Image(systemName: "text.bubble")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .glass(Circle(), interactive: true)
+        }
+        .simultaneousGesture(TapGesture().onEnded { holdControls() })
+    }
+
+    private var moreMenu: some View {
+        Menu {
+            Button(fill ? "Fit to Screen" : "Fill Screen",
+                   systemImage: fill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+                setFill(!fill)
+                interacted()
+            }
+            if !engine.mediaChapters.isEmpty {
+                Button("Chapters", systemImage: "list.bullet.rectangle") { panel = .chapters }
+            }
+            Button("Playback Settings", systemImage: "slider.horizontal.3") { panel = .settings }
+            Button {
+                withAnimation { showStats.toggle() }
+                interacted()
+            } label: {
+                Label(showStats ? "Hide Stream Details" : "Stream Details", systemImage: "waveform.path.ecg")
+            }
+            Button("Lock Controls", systemImage: "lock.fill") {
+                withAnimation { locked = true }
+                scheduleHide()
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .glass(Circle(), interactive: true)
+        }
+        .simultaneousGesture(TapGesture().onEnded { holdControls() })
     }
 
     private var lockedOverlay: some View {
@@ -301,14 +490,16 @@ struct PlayerView: View {
                 withAnimation { locked = false }
                 scheduleHide()
             } label: {
-                Label("Unlock", systemImage: "lock.fill")
-                    .font(.headline)
+                Label("Tap to Unlock", systemImage: "lock.fill")
+                    .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.vertical, 12)
+                    .contentShape(Capsule())
+                    .glass(Capsule(), interactive: true)
             }
+            .buttonStyle(PressScaleButtonStyle())
             .foregroundStyle(.white)
-            .padding(.bottom, 30)
+            .padding(.bottom, 24)
         }
     }
 
@@ -316,24 +507,29 @@ struct PlayerView: View {
 
     @ViewBuilder
     private var upNextCard: some View {
-        if !item.queue.isEmpty && !locked {
+        if !item.queue.isEmpty && !locked && !starting {
             UpNextOverlay(engine: engine, clock: engine.clock, next: item.queue[0], state: nextState,
                           lifted: showControls,
                           onPlay: { Task { await playNext() } },
-                          onCancel: { nextState = .idle })
+                          onCancel: {
+                              countdownTask?.cancel()
+                              nextState = .idle
+                          })
         }
     }
 
     private func startNextCountdown() {
         guard !item.queue.isEmpty, nextState == .idle else { return }
         nextState = .countdown(8)
-        Task { @MainActor in
-            while case .countdown(let left) = nextState {
+        countdownTask?.cancel()
+        countdownTask = Task { @MainActor in
+            while case .countdown(let left) = nextState, !Task.isCancelled {
                 if left <= 0 {
                     await playNext()
                     return
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
                 if case .countdown(let current) = nextState, current == left {
                     nextState = .countdown(left - 1)
                 }
@@ -342,12 +538,16 @@ struct PlayerView: View {
     }
 
     private func playNext() async {
-        guard !item.queue.isEmpty else { return }
+        guard !item.queue.isEmpty, nextState != .resolving else { return }
+        countdownTask?.cancel()
+        let current = item
         nextState = .resolving
-        if let next = await StreamResolver.next(after: item, addons: addons) {
+        if let next = await StreamResolver.next(after: current, addons: addons) {
+            guard item.id == current.id else { return }
             // This episode counts as watched.
-            if let ref = item.watch {
-                watch.record(ref, position: max(engine.duration, 1), duration: max(engine.duration, 1))
+            if let ref = current.watch {
+                let length = max(engine.duration, 1)
+                watch.record(ref, position: length, duration: length, next: next.watch)
             }
             nextState = .idle
             onlineSubtitles = []
@@ -362,11 +562,13 @@ struct PlayerView: View {
 
     private func load() async {
         loadError = nil
+        torrent.watch(item.stream)
+        let loadingId = item.id
         var options = LoadOptions()
         options.confirmAtmos = true
         options.httpHeaders = item.headers
         options.preferredAudioLanguages = preferredLanguages
-        let resume = item.watch.flatMap { watch.resumePosition(for: $0.videoId) }
+        let resume = item.watch.flatMap { watch.resumePosition(for: $0.videoId) }.flatMap { $0 > 0 ? $0 : nil }
 
         var info: [String: Any] = [MPMediaItemPropertyTitle: item.watch?.episodeLabel ?? item.displayTitle]
         if let name = item.watch?.name, item.watch?.episodeLabel != nil {
@@ -374,8 +576,9 @@ struct PlayerView: View {
         }
         engine.setNowPlayingInfo(info)
 
-        Task { await loadOnlineSubtitles() }
-        Task { await loadArtwork(into: info) }
+        // Side loads check they still belong to the item playing before writing.
+        Task { await loadOnlineSubtitles(for: loadingId) }
+        Task { await loadArtwork(into: info, for: loadingId) }
 
         do {
             _ = try await engine.load(url: item.url, startPosition: resume, options: options)
@@ -389,12 +592,21 @@ struct PlayerView: View {
         }
     }
 
+    /// Saves the position every 30 seconds while playing (locally only), so a crash or an
+    /// app kill loses little.
+    private func saveWhilePlaying() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            if engine.state == .playing { recordProgress(push: false) }
+        }
+    }
+
     private var preferredLanguages: [String] {
         Locale.preferredLanguages.compactMap { Locale(identifier: $0).language.languageCode?.identifier }
             + ["en"]
     }
 
-    private func loadOnlineSubtitles() async {
+    private func loadOnlineSubtitles(for id: UUID) async {
         guard let ref = item.watch else { return }
         let sources = addons.supporting("subtitles", type: ref.type, id: ref.videoId)
         var found: [AddonSubtitle] = []
@@ -403,27 +615,29 @@ struct PlayerView: View {
                 found.append(contentsOf: subs)
             }
         }
-        onlineSubtitles = found
+        if item.id == id { onlineSubtitles = found }
     }
 
-    private func loadArtwork(into info: [String: Any]) async {
+    private func loadArtwork(into info: [String: Any], for id: UUID) async {
         guard let poster = item.watch?.poster ?? item.poster, let url = URL(string: poster),
-              let image = await ImagePipeline.shared.image(url, maxPixel: 600) else { return }
+              let image = await ImagePipeline.shared.image(url, maxPixel: 600),
+              item.id == id else { return }
         var updated = info
         updated[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         engine.setNowPlayingInfo(updated)
     }
 
-    private func recordProgress() {
-        if let ref = item.watch {
-            watch.record(ref, position: engine.clock.currentTime, duration: engine.duration)
-        }
+    private func recordProgress(push: Bool) {
+        guard let ref = item.watch, hasStarted else { return }
+        let next = item.queue.first
+        watch.record(ref, position: engine.clock.currentTime, duration: engine.duration, next: next, push: push)
     }
 
     // MARK: Actions
 
     private func skip(_ delta: Double, flash: Bool) {
-        let target = min(max(engine.clock.currentTime + delta, 0), max(engine.duration - 1, 0))
+        var target = max(engine.clock.currentTime + delta, 0)
+        if engine.duration > 0 { target = min(target, max(engine.duration - 1, 0)) }
         Task { await engine.seek(to: target) }
         if flash {
             let previous = (seekFlash?.forward == (delta > 0)) ? (seekFlash?.seconds ?? 0) : 0
@@ -463,19 +677,34 @@ struct PlayerView: View {
     }
 
     private func errorBanner(_ text: String) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(.yellow)
             Text(text).font(.footnote).multilineTextAlignment(.center)
-            HStack {
-                Button("Retry") { Task { await load() } }
-                    .buttonStyle(.borderedProminent)
-                Button("Close") { dismiss() }
-                    .buttonStyle(.bordered)
+            HStack(spacing: 12) {
+                Button {
+                    Task { await load() }
+                } label: {
+                    Text("Try Again")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 18).padding(.vertical, 10)
+                        .background(.white, in: Capsule())
+                        .foregroundStyle(.black)
+                }
+                Button {
+                    dismiss()
+                } label: {
+                    Text("Close")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 18).padding(.vertical, 10)
+                        .glass(Capsule(), interactive: true)
+                }
             }
+            .buttonStyle(PressScaleButtonStyle())
         }
         .foregroundStyle(.white)
-        .padding(20)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(22)
+        .frame(maxWidth: 420)
+        .glass(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .padding(40)
     }
 }
@@ -493,45 +722,21 @@ struct SeekFlash: Equatable {
 
 // MARK: - Small building blocks
 
-struct CircleButton: View {
+/// A round glass button with a symbol, the player's standard control.
+struct GlassIconButton: View {
     let symbol: String
-    var size: CGFloat = 18
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: size, weight: .semibold))
-                .frame(width: size * 2.2, height: size * 2.2)
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 44, height: 44)
                 .contentShape(Circle())
+                .glass(Circle(), interactive: true)
         }
-        .buttonStyle(.plain)
-    }
-}
-
-struct ChipLabel: View {
-    let symbol: String
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol)
-            Text(label).font(.footnote.weight(.semibold))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(.white.opacity(0.12), in: Capsule())
-    }
-}
-
-struct ControlChip: View {
-    let symbol: String
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) { ChipLabel(symbol: symbol, label: label) }
-            .buttonStyle(.plain)
+        .buttonStyle(PressScaleButtonStyle(scale: 0.92))
+        .foregroundStyle(.white)
     }
 }
 
@@ -541,12 +746,12 @@ struct SeekFlashView: View {
     var body: some View {
         VStack(spacing: 6) {
             Image(systemName: flash.forward ? "forward.fill" : "backward.fill")
-                .font(.title)
-            Text("\(Int(flash.seconds)) s").font(.headline)
+                .font(.title2)
+            Text("\(Int(flash.seconds)) s").font(.subheadline.weight(.semibold).monospacedDigit())
         }
         .foregroundStyle(.white)
-        .frame(width: 110, height: 110)
-        .background(.ultraThinMaterial, in: Circle())
+        .frame(width: 100, height: 100)
+        .glass(Circle())
     }
 }
 
@@ -571,9 +776,10 @@ struct BufferingIndicator: View {
                     .controlSize(.large)
                     .tint(.white)
                 if !label.isEmpty {
-                    Text(label).font(.footnote).foregroundStyle(.white.opacity(0.8))
+                    Text(label).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.85))
                 }
             }
+            .shadow(color: .black.opacity(0.5), radius: 8)
             .allowsHitTesting(false)
         }
     }
@@ -602,7 +808,8 @@ struct UpNextOverlay: View {
                 }
             }
             .padding(.horizontal, 24)
-            .padding(.bottom, lifted ? 120 : 30)
+            .padding(.bottom, lifted ? 130 : 30)
+            .animation(.easeInOut(duration: 0.25), value: lifted)
             .transition(.move(edge: .trailing).combined(with: .opacity))
         }
     }
@@ -615,41 +822,48 @@ struct UpNextCard: View {
     let onCancel: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            RemoteImage(url: next.poster, maxPixel: 200)
-                .frame(width: 50, height: 75)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Up next").font(.caption).foregroundStyle(.white.opacity(0.7))
+        HStack(spacing: 14) {
+            RemoteImage(url: next.background ?? next.poster, maxPixel: 400)
+                .frame(width: 128, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("UP NEXT").font(.caption2.weight(.bold)).foregroundStyle(.white.opacity(0.6))
                 Text(next.episodeLabel ?? next.name).font(.subheadline.weight(.semibold)).lineLimit(2)
-                HStack {
+                HStack(spacing: 8) {
                     Button(action: onPlay) {
-                        switch state {
-                        case .countdown(let left): Text("Play in \(left)")
-                        case .resolving: HStack(spacing: 6) { ProgressView().tint(.black); Text("Finding stream") }
-                        case .failed: Text("No stream found · Retry")
-                        case .idle: Text("Play now")
+                        Group {
+                            switch state {
+                            case .countdown(let left): Text("Play in \(left)")
+                            case .resolving: HStack(spacing: 6) { ProgressView().tint(.black); Text("Finding stream") }
+                            case .failed: Text("No stream found · Retry")
+                            case .idle: Text("Play Now")
+                            }
                         }
+                        .padding(.horizontal, 14).padding(.vertical, 7)
+                        .background(.white, in: Capsule())
+                        .foregroundStyle(.black)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.white)
-                    .foregroundStyle(.black)
                     .disabled(state == .resolving)
                     if case .countdown = state {
-                        Button("Cancel", action: onCancel).buttonStyle(.bordered)
+                        Button(action: onCancel) {
+                            Text("Cancel")
+                                .padding(.horizontal, 14).padding(.vertical, 7)
+                                .glass(Capsule(), interactive: true)
+                        }
                     }
                 }
+                .buttonStyle(PressScaleButtonStyle(scale: 0.94))
                 .font(.footnote.weight(.semibold))
             }
         }
         .foregroundStyle(.white)
         .padding(12)
-        .frame(maxWidth: 380)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: 400)
+        .glass(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
-// MARK: - Scrub bar with thumbnails
+// MARK: - Timeline with thumbnails
 
 struct ScrubBar: View {
     @ObservedObject var engine: AetherEngine
@@ -661,36 +875,38 @@ struct ScrubBar: View {
     @State private var dragTime: Double?
     @State private var thumbnail: CGImage?
     @State private var thumbnailTask: Task<Void, Never>?
+    /// True only while a finger is down; resets itself if the system cancels the drag.
+    @GestureState private var dragging = false
 
     private var duration: Double { max(engine.duration, 0.1) }
     private var shownTime: Double { dragTime ?? clock.currentTime }
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             GeometryReader { geo in
                 let width = geo.size.width
                 let fraction = min(max(shownTime / duration, 0), 1)
                 let buffered = min(max(clock.bufferedPosition / duration, 0), 1)
-                let barHeight: CGFloat = scrubbing ? 8 : 5
+                let barHeight: CGFloat = scrubbing ? 12 : 6
 
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.22)).frame(height: barHeight)
-                    Capsule().fill(.white.opacity(0.4)).frame(width: width * buffered, height: barHeight)
-                    Capsule().fill(.white).frame(width: width * fraction, height: barHeight)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: scrubbing ? 20 : 14, height: scrubbing ? 20 : 14)
-                        .offset(x: width * fraction - (scrubbing ? 10 : 7))
+                    Capsule().fill(.white.opacity(0.25))
+                    Capsule().fill(.white.opacity(0.35)).frame(width: width * buffered)
+                    Capsule().fill(.white).frame(width: max(width * fraction, barHeight))
                 }
-                .frame(height: 28)
+                .frame(height: barHeight)
+                .clipShape(Capsule())
+                .frame(height: 30)
                 .contentShape(Rectangle())
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: scrubbing)
                 .gesture(
                     DragGesture(minimumDistance: 0)
+                        .updating($dragging) { _, state, _ in state = true }
                         .onChanged { value in
                             guard engine.duration > 0 else { return }
                             let f = min(max(value.location.x / width, 0), 1)
                             let time = f * duration
-                            if !scrubbing { withAnimation(.easeOut(duration: 0.1)) { scrubbing = true } }
+                            if !scrubbing { scrubbing = true }
                             dragTime = time
                             requestThumbnail(time)
                         }
@@ -698,24 +914,32 @@ struct ScrubBar: View {
                             if let target = dragTime {
                                 Task {
                                     await engine.seek(to: target)
-                                    dragTime = nil
+                                    // A newer drag may have started meanwhile; leave its time alone.
+                                    if dragTime == target, !dragging { dragTime = nil }
                                 }
                             }
-                            withAnimation(.easeOut(duration: 0.15)) { scrubbing = false }
-                            thumbnailTask?.cancel()
-                            thumbnail = nil
-                            onInteraction()
+                            endScrub()
                         }
                 )
+                .onChange(of: dragging) { _, isDown in
+                    // Drag cancelled by the system (Control Center, a call): no onEnded comes.
+                    if !isDown, scrubbing {
+                        endScrub()
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            if !dragging, !scrubbing { dragTime = nil }
+                        }
+                    }
+                }
                 .overlay(alignment: .bottomLeading) {
-                    if let dragTime {
+                    if scrubbing, let dragTime {
                         preview(time: dragTime)
-                            .offset(x: min(max(width * fraction - 90, 0), max(width - 180, 0)), y: -40)
+                            .offset(x: min(max(width * fraction - 100, 0), max(width - 200, 0)), y: -44)
                             .allowsHitTesting(false)
                     }
                 }
             }
-            .frame(height: 28)
+            .frame(height: 30)
 
             HStack {
                 Text(formatTime(shownTime))
@@ -727,27 +951,36 @@ struct ScrubBar: View {
                 }
                 .buttonStyle(.plain)
             }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.85))
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.8))
         }
     }
 
+    private func endScrub() {
+        scrubbing = false
+        thumbnailTask?.cancel()
+        thumbnail = nil
+        onInteraction()
+    }
+
     private func preview(time: Double) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             if let thumbnail {
                 Image(decorative: thumbnail, scale: 1)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(width: 200)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.6), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.5), radius: 10)
             }
             Text(formatTime(time))
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(.black.opacity(0.6), in: Capsule())
+                .font(.caption.monospacedDigit().weight(.bold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .glass(Capsule())
         }
-        .frame(width: 180)
+        .frame(width: 200)
     }
 
     private func requestThumbnail(_ time: Double) {
@@ -756,7 +989,7 @@ struct ScrubBar: View {
         thumbnailTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 60_000_000)
             guard !Task.isCancelled else { return }
-            let image = await engine.scrubThumbnail(atSeconds: time, maxWidth: 360)
+            let image = await engine.scrubThumbnail(atSeconds: time, maxWidth: 400)
             if !Task.isCancelled, let image { thumbnail = image }
         }
     }
@@ -805,7 +1038,7 @@ struct SubtitleOverlay: View {
                             .background(background ? Color.black.opacity(0.45) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                             .padding(.horizontal, 40)
-                            .padding(.bottom, lifted ? 110 : 24)
+                            .padding(.bottom, lifted ? 130 : 24)
                             .animation(.easeInOut(duration: 0.2), value: lifted)
                     }
                     .frame(maxWidth: .infinity)

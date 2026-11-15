@@ -122,6 +122,9 @@ final class AddonStore: ObservableObject {
         let (manifest, data) = try await StremioClient.fetchManifest(url)
         let addon = InstalledAddon(transportURL: url.absoluteString, manifest: manifest)
         manifestCache[manifest.id] = data
+        // Installing again undoes an earlier removal.
+        let removed = (UserDefaults.standard.stringArray(forKey: removedKey) ?? []).filter { $0 != manifest.id }
+        UserDefaults.standard.set(removed, forKey: removedKey)
         if let index = addons.firstIndex(where: { $0.id == manifest.id }) {
             addons[index] = addon
         } else {
@@ -135,10 +138,12 @@ final class AddonStore: ObservableObject {
     /// only in this app stay, after the account's. Stremio's on-device "local" addon is skipped.
     func adoptAccountAddons(_ collection: [(url: String, manifest: Data)]) {
         var adopted: [InstalledAddon] = []
+        let removed = Set(UserDefaults.standard.stringArray(forKey: removedKey) ?? [])
         for entry in collection {
             guard let url = URL(string: entry.url), let host = url.host?.lowercased(),
                   host != "127.0.0.1", host != "localhost",
                   let manifest = try? JSONDecoder().decode(StremioManifest.self, from: entry.manifest),
+                  !removed.contains(manifest.id),
                   !adopted.contains(where: { $0.id == manifest.id }) else { continue }
             adopted.append(InstalledAddon(transportURL: entry.url, manifest: manifest))
             manifestCache[manifest.id] = entry.manifest
@@ -153,8 +158,16 @@ final class AddonStore: ObservableObject {
         if !unchanged { save() }
     }
 
+    /// Addons removed here stay removed even though the Stremio account still lists them.
+    private let removedKey = "addons.removed"
+
     func remove(at offsets: IndexSet) {
-        for index in offsets { manifestCache[addons[index].id] = nil }
+        var removed = UserDefaults.standard.stringArray(forKey: removedKey) ?? []
+        for index in offsets {
+            manifestCache[addons[index].id] = nil
+            if !removed.contains(addons[index].id) { removed.append(addons[index].id) }
+        }
+        UserDefaults.standard.set(removed, forKey: removedKey)
         addons.remove(atOffsets: offsets)
         save()
     }
@@ -230,7 +243,7 @@ final class WatchStore: ObservableObject {
                     byTitle[snapshot.ref.metaId] = Entry(ref: ref, position: snapshot.position,
                                                          duration: snapshot.duration, updated: snapshot.updated)
                 }
-            } else if let local, snapshot.modified > local.updated {
+            } else if let local, local.position > 0, snapshot.modified > local.updated + 60 {
                 byTitle[snapshot.ref.metaId] = nil
             }
         }
@@ -255,16 +268,24 @@ final class WatchStore: ObservableObject {
         entries.first { $0.ref.videoId == videoId }?.position
     }
 
-    /// Called when the player closes. Very short views are ignored, and a video watched to
-    /// (nearly) the end leaves the list.
-    func record(_ ref: VideoRef, position: Double, duration: Double) {
-        guard position.isFinite, duration.isFinite else { return }
-        onRecord?(ref, position, duration)
+    /// Set by the app to clear a title from Stremio's Continue Watching too.
+    var onRemove: ((VideoRef) -> Void)?
+
+    /// Saves where playback is. Views under 30 seconds change nothing (so closing a stream
+    /// that never started can't wipe a resume point). A finished episode is replaced by the
+    /// next one at its start, so the series continues where you are; a finished movie leaves.
+    /// `push` sends it to the Stremio account too (on close / background, not every save).
+    func record(_ ref: VideoRef, position: Double, duration: Double, next: VideoRef? = nil, push: Bool = true) {
+        guard position.isFinite, duration.isFinite, duration > 0 else { return }
+        let finished = position > duration - max(120, duration * 0.05)
+        guard position >= 30 || finished else { return }
+        if push { onRecord?(ref, position, duration) }
         // One entry per title: a new episode replaces the previous one of the same series.
         var updated = entries.filter { $0.ref.videoId != ref.videoId && $0.ref.metaId != ref.metaId }
-        let finished = duration > 0 && position > duration - max(120, duration * 0.05)
-        if position >= 30 && !finished {
+        if !finished {
             updated.insert(Entry(ref: ref, position: position, duration: duration, updated: Date()), at: 0)
+        } else if let next {
+            updated.insert(Entry(ref: next, position: 0, duration: 0, updated: Date()), at: 0)
         }
         if updated.count > limit { updated = Array(updated.prefix(limit)) }
         entries = updated
@@ -274,6 +295,7 @@ final class WatchStore: ObservableObject {
     }
 
     func remove(_ videoId: String) {
+        if let entry = entries.first(where: { $0.ref.videoId == videoId }) { onRemove?(entry.ref) }
         entries.removeAll { $0.ref.videoId == videoId }
         if let data = try? JSONEncoder().encode(entries) {
             UserDefaults.standard.set(data, forKey: key)

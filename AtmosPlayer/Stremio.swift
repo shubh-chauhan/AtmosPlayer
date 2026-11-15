@@ -351,6 +351,12 @@ struct StremioStream: Decodable, Identifiable {
     /// The http(s) link this app plays: the addon's direct link, or for a torrent, the file
     /// served by your Stremio streaming server (the same URL Stremio itself builds).
     var playableURL: URL? {
+        Self.makeURL(url: url, infoHash: infoHash, fileIdx: fileIdx, sources: sources,
+                     fileMustInclude: fileMustInclude)
+    }
+
+    static func makeURL(url: String?, infoHash: String?, fileIdx: Int?, sources: [String],
+                        fileMustInclude: [String]) -> URL? {
         if let url, let parsed = URL(string: url),
            let scheme = parsed.scheme?.lowercased(), scheme == "http" || scheme == "https" {
             return parsed

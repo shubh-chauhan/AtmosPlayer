@@ -19,7 +19,7 @@ struct TracksPanel: View {
                         Button {
                             engine.selectAudioTrack(index: track.id)
                         } label: {
-                            TrackRow(title: track.name, detail: audioDetail(track),
+                            TrackRow(title: track.name, detail: Self.audioDetail(track),
                                      selected: engine.activeAudioTrackIndex == track.id,
                                      badge: track.isAtmos ? "ATMOS" : (track.isDTSX ? "DTS:X" : nil))
                         }
@@ -32,12 +32,14 @@ struct TracksPanel: View {
                     } label: {
                         TrackRow(title: "Off", detail: nil, selected: !engine.isSubtitleActive, badge: nil)
                     }
-                    ForEach(engine.subtitleTracks) { track in
+                    // Online subtitles already added are listed in their own section below.
+                    ForEach(engine.subtitleTracks.filter { !addedTrackIds.contains($0.id) }) { track in
                         Button {
                             engine.selectSubtitleTrack(index: track.id)
                         } label: {
-                            TrackRow(title: track.name, detail: subtitleDetail(track),
-                                     selected: engine.activeSubtitleTrackIndex == track.id, badge: nil)
+                            TrackRow(title: track.name, detail: Self.subtitleDetail(track),
+                                     selected: engine.isSubtitleActive && engine.activeSubtitleTrackIndex == track.id,
+                                     badge: nil)
                         }
                     }
                 }
@@ -90,10 +92,14 @@ struct TracksPanel: View {
     // The engine reports no index while an external file is showing, so remember which one we picked.
     private static let activeKey = "__active"
 
+    private var addedTrackIds: Set<Int> {
+        Set(addedSubtitleURLs.filter { $0.key != Self.activeKey }.map(\.value))
+    }
+
+    // The engine reports the added track's id as the active subtitle.
     private func isSelected(_ sub: AddonSubtitle) -> Bool {
         guard let id = addedSubtitleURLs[sub.url] else { return false }
-        return engine.isSubtitleActive && engine.activeSubtitleTrackIndex == nil
-            && addedSubtitleURLs[Self.activeKey] == id
+        return engine.isSubtitleActive && engine.activeSubtitleTrackIndex == id
     }
 
     private func select(_ sub: AddonSubtitle, index: Int) {
@@ -110,7 +116,7 @@ struct TracksPanel: View {
         engine.selectSubtitleTrack(index: track.id)
     }
 
-    private func audioDetail(_ track: TrackInfo) -> String {
+    static func audioDetail(_ track: TrackInfo) -> String {
         var parts: [String] = []
         parts.append(track.codec.uppercased())
         if let layout = track.channelLayout { parts.append(layout) } else if track.channels > 0 { parts.append("\(track.channels) ch") }
@@ -119,7 +125,7 @@ struct TracksPanel: View {
         return parts.joined(separator: " · ")
     }
 
-    private func subtitleDetail(_ track: TrackInfo) -> String? {
+    static func subtitleDetail(_ track: TrackInfo) -> String? {
         var parts: [String] = [track.codec.uppercased()]
         if track.isForced { parts.append("Forced") }
         if track.isHearingImpaired { parts.append("SDH") }

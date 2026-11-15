@@ -55,6 +55,8 @@ struct HomeScreen: View {
     @State private var rows: [CatalogRow] = []
     @State private var loading = false
     @State private var path = NavigationPath()
+    @State private var startingId: String?
+    @EnvironmentObject private var coordinator: PlayerCoordinator
 
     private var heroItems: [MetaPreview] {
         let source = rows.first?.items ?? []
@@ -72,8 +74,15 @@ struct HomeScreen: View {
                     if !watch.entries.isEmpty {
                         Shelf(title: "Continue Watching") {
                             ForEach(watch.entries) { entry in
-                                NavigationLink(value: StreamsRoute(video: entry.ref)) {
+                                Button {
+                                    Task { await resume(entry.ref) }
+                                } label: {
                                     ContinueCard(entry: entry)
+                                        .overlay {
+                                            if startingId == entry.id {
+                                                ProgressView().controlSize(.large).tint(.white)
+                                            }
+                                        }
                                 }
                                 .buttonStyle(CardButtonStyle())
                                 .contextMenu {
@@ -133,7 +142,7 @@ struct HomeScreen: View {
             .task(id: addons.revision) { await load() }
             .refreshable {
                 await account.sync(addons: addons, watch: watch)
-                await load()
+                await load(force: true)
             }
             .task {
                 // CI screenshots only: open a title page.
@@ -159,10 +168,28 @@ struct HomeScreen: View {
         }
     }
 
-    private func load() async {
+    /// Continue Watching resumes with the stream used last time, like Stremio; if there isn't
+    /// one, the stream list opens.
+    private func resume(_ video: VideoRef) async {
+        guard startingId == nil else { return }
+        startingId = video.videoId
+        defer { startingId = nil }
+        let queue = await EpisodeQueue.queue(after: video, addons: addons)
+        if let item = await QuickPlay.resolve(video: video, queue: queue, addons: addons) {
+            coordinator.play(item)
+        } else {
+            path.append(StreamsRoute(video: video, queue: queue))
+        }
+    }
+
+    @State private var loadedRevision: Int?
+
+    private func load(force: Bool = false) async {
+        guard force || loadedRevision != addons.revision || rows.isEmpty else { return }
         loading = true
         defer { loading = false }
         let loaded = await CatalogLoader.rows(addons.addons)
+        loadedRevision = addons.revision
         withAnimation(.easeOut(duration: 0.25)) { rows = loaded }
     }
 }
@@ -478,6 +505,7 @@ struct SearchScreen: View {
             }
             .background(Color.black)
             .navigationTitle("Search")
+            .scrollDismissesKeyboard(.immediately)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: "Movies & Series")
             .modifier(BrowseDestinations())

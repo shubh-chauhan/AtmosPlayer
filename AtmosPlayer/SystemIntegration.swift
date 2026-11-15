@@ -8,7 +8,10 @@ import AetherEngine
 
 /// Lets the player turn the app to landscape and back, the way Infuse does.
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    static var orientationMask: UIInterfaceOrientationMask = .all
+    /// Browsing stays upright on iPhone, like the Apple TV app; the player turns to landscape.
+    static let defaultMask: UIInterfaceOrientationMask =
+        UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
+    static var orientationMask: UIInterfaceOrientationMask = defaultMask
 
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {

@@ -53,11 +53,15 @@ struct AtmosPlayerApp: App {
                 .environmentObject(coordinator)
                 .preferredColorScheme(.dark)
                 .tint(.white)
+                .toggleStyle(BrandToggleStyle())
                 .task {
                     // Progress recorded when the player closes also goes to the Stremio account.
                     let account = self.account
                     watch.onRecord = { ref, position, duration in
                         Task { await account.pushProgress(ref, position: position, duration: duration) }
+                    }
+                    watch.onRemove = { ref in
+                        Task { await account.clearProgress(ref) }
                     }
                     await account.sync(addons: addons, watch: watch)
                 }
@@ -108,8 +112,14 @@ struct RootView: View {
                     .environmentObject(watch)
                     .environmentObject(addons)
             } else {
-                Text("Player engine unavailable: \(model.engineError ?? "unknown error")")
-                    .padding()
+                VStack(spacing: 16) {
+                    Text("Player engine unavailable: \(model.engineError ?? "unknown error")")
+                        .multilineTextAlignment(.center)
+                    Button("Close") { coordinator.current = nil }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Brand.accent)
+                }
+                .padding()
             }
         }
         // atmosplayer://play?url=<percent-encoded link>, for handing a link over from another app.

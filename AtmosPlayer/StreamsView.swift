@@ -61,14 +61,19 @@ struct StreamsView: View {
                     if let error = result.error {
                         Text(error).font(.footnote).foregroundStyle(.red)
                     } else {
-                        let shown = result.streams.filter { !atmosOnly || $0.badges.contains("Atmos") }
+                        let filtered = result.streams.filter { !atmosOnly || $0.badges.contains("Atmos") }
+                        // The stream played last time goes first, marked, as in Stremio.
+                        let shown = filtered.filter { isLast($0, addonId: result.id) }
+                            + filtered.filter { !isLast($0, addonId: result.id) }
                         if shown.isEmpty {
                             Text(atmosOnly ? "No streams labelled Atmos." : "No streams.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(shown) { stream in
-                            StreamRow(stream: stream) { play(stream, from: result.id) }
+                            StreamRow(stream: stream, isLast: isLast(stream, addonId: result.id)) {
+                                play(stream, from: result.id)
+                            }
                         }
                     }
                 }
@@ -90,7 +95,7 @@ struct StreamsView: View {
         .background(Color.black)
         .navigationTitle("Choose a Stream")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task { if results.isEmpty { await load() } }
         .refreshable { await load() }
     }
 
@@ -121,21 +126,24 @@ struct StreamsView: View {
         }
     }
 
+    private var lastStream: SavedStream? { LastStreamStore.shared.stream(forTitle: video.metaId) }
+
+    private func isLast(_ stream: StremioStream, addonId: String) -> Bool {
+        guard let lastStream, lastStream.addonId == addonId, lastStream.videoId == video.videoId else { return false }
+        return lastStream.matches(stream)
+    }
+
     private func play(_ stream: StremioStream, from addonId: String) {
-        guard let url = stream.playableURL else { return }
-        coordinator.play(PlayItem(url: url,
-                                  title: video.displayTitle,
-                                  headers: stream.requestHeaders,
-                                  watch: video,
-                                  queue: queue,
-                                  addonId: addonId,
-                                  bingeGroup: stream.bingeGroup,
-                                  poster: video.poster))
+        let saved = SavedStream(stream, addonId: addonId, videoId: video.videoId)
+        if let item = QuickPlay.item(video: video, queue: queue, stream: saved) {
+            coordinator.play(item)
+        }
     }
 }
 
 struct StreamRow: View {
     let stream: StremioStream
+    var isLast = false
     let onPlay: () -> Void
 
     var body: some View {
@@ -145,6 +153,11 @@ struct StreamRow: View {
                     .font(.title2)
                     .foregroundStyle(stream.playableURL == nil ? Color.secondary : Color.white)
                 VStack(alignment: .leading, spacing: 5) {
+                    if isLast {
+                        Label("Last played", systemImage: "clock.arrow.circlepath")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Brand.accent)
+                    }
                     if !stream.badges.isEmpty {
                         HStack(spacing: 4) {
                             ForEach(stream.badges, id: \.self) { badge in

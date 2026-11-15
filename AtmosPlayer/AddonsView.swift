@@ -25,9 +25,10 @@ struct AddonsView: View {
                 serverSection
 
                 Section {
-                    TextField("https://…/manifest.json or stremio://…", text: $link, axis: .vertical)
-                        .lineLimit(1...4)
+                    TextField("https://…/manifest.json or stremio://…", text: $link)
                         .keyboardType(.URL)
+                        .submitLabel(.go)
+                        .onSubmit { Task { await install() } }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     HStack {
@@ -41,6 +42,7 @@ struct AddonsView: View {
                         if installing { ProgressView() }
                         Button("Install") { Task { await install() } }
                             .buttonStyle(.borderedProminent)
+                            .tint(Brand.accent)
                             .disabled(link.trimmingCharacters(in: .whitespaces).isEmpty || installing)
                     }
                     if let status {
@@ -78,6 +80,8 @@ struct AddonsView: View {
             }
             .navigationTitle("Stremio")
             .toolbar { EditButton() }
+            .scrollDismissesKeyboard(.immediately)
+            .keyboardDoneButton()
             .sheet(isPresented: $showSignIn) {
                 StremioSignInView()
                     .presentationDetents([.medium, .large])
@@ -90,6 +94,7 @@ struct AddonsView: View {
         Section {
             TextField("https://…:12470", text: $serverDraft)
                 .keyboardType(.URL)
+                .submitLabel(.done)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .onSubmit { Task { await saveServer() } }
@@ -106,6 +111,7 @@ struct AddonsView: View {
                     Task { await saveServer() }
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Brand.accent)
                 .disabled(serverDraft.trimmingCharacters(in: .whitespaces).isEmpty || checkingServer)
             }
             if let serverStatus {
@@ -129,6 +135,7 @@ struct AddonsView: View {
     }
 
     private func saveServer() async {
+        dismissKeyboard()
         guard let normalized = StreamingServer.normalize(serverDraft) else {
             serverOK = false
             serverStatus = "That isn't a valid address."
@@ -199,6 +206,8 @@ struct AddonsView: View {
     }
 
     private func install() async {
+        guard !link.trimmingCharacters(in: .whitespaces).isEmpty, !installing else { return }
+        dismissKeyboard()
         installing = true
         status = nil
         defer { installing = false }
@@ -286,6 +295,7 @@ struct StremioSignInView: View {
             }
             .navigationTitle("Stremio Account")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.immediately)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
