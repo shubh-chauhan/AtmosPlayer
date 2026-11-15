@@ -11,6 +11,8 @@ struct VideoRef: Hashable, Codable {
     let poster: String?
     /// "S1E2 · Episode title" for episodes, nil for movies.
     let episodeLabel: String?
+    /// Landscape artwork (episode still or backdrop) for Continue Watching cards.
+    var background: String? = nil
 
     var displayTitle: String {
         if let episodeLabel { return "\(name) · \(episodeLabel)" }
@@ -18,12 +20,61 @@ struct VideoRef: Hashable, Codable {
     }
 }
 
-/// A title shown in Discover / search, opened into its detail page.
-struct MetaRef: Hashable {
+/// Opening the stream list: the video plus the episodes after it (for "Next episode").
+struct StreamsRoute: Hashable {
+    let video: VideoRef
+    var queue: [VideoRef] = []
+}
+
+/// A title shown in Home / Search, opened into its detail page.
+struct MetaRef: Hashable, Codable {
     let id: String
     let type: String
     let name: String
     let poster: String?
+    var background: String? = nil
+    var logo: String? = nil
+
+    init(id: String, type: String, name: String, poster: String?, background: String? = nil, logo: String? = nil) {
+        self.id = id
+        self.type = type
+        self.name = name
+        self.poster = poster
+        self.background = background
+        self.logo = logo
+    }
+
+    init(_ preview: MetaPreview) {
+        self.init(id: preview.id, type: preview.type, name: preview.name, poster: preview.poster,
+                  background: preview.background, logo: preview.logo)
+    }
+}
+
+/// "My List": titles saved from their detail page.
+@MainActor
+final class FavoritesStore: ObservableObject {
+    @Published private(set) var items: [MetaRef] = []
+    private let key = "favorites.v1"
+
+    init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let stored = try? JSONDecoder().decode([MetaRef].self, from: data) {
+            items = stored
+        }
+    }
+
+    func contains(_ id: String) -> Bool { items.contains { $0.id == id } }
+
+    func toggle(_ ref: MetaRef) {
+        if contains(ref.id) {
+            items.removeAll { $0.id == ref.id }
+        } else {
+            items.insert(ref, at: 0)
+        }
+        if let data = try? JSONEncoder().encode(items) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
 }
 
 /// Installed Stremio addons, in the order the user added them. Persisted as the manifest URL

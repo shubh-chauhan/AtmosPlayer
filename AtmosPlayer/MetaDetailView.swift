@@ -1,120 +1,273 @@
 import SwiftUI
 
+/// Title page: full-bleed artwork, Play / Resume, My List, seasons and an episode shelf.
 struct MetaDetailView: View {
     let ref: MetaRef
     @EnvironmentObject private var addons: AddonStore
+    @EnvironmentObject private var watch: WatchStore
+    @EnvironmentObject private var favorites: FavoritesStore
 
     @State private var meta: StremioMeta?
     @State private var loading = true
     @State private var season: Int = 1
+    @State private var expandedDescription = false
+
+    private let heroHeight: CGFloat = 540
+
+    // MARK: Derived data
+
+    private var name: String { meta?.name ?? ref.name }
+    private var type: String { meta?.type ?? ref.type }
+    private var background: String? { meta?.background ?? ref.background ?? meta?.poster ?? ref.poster }
+    private var isSeries: Bool { !(meta?.videos.isEmpty ?? true) || ref.type == "series" }
+
+    /// Every episode in watching order: regular seasons first, specials last.
+    private var orderedVideos: [StremioMeta.Video] {
+        (meta?.videos ?? []).sorted { a, b in
+            let sa = a.season == 0 ? Int.max : (a.season ?? 0)
+            let sb = b.season == 0 ? Int.max : (b.season ?? 0)
+            if sa != sb { return sa < sb }
+            return (a.episode ?? 0) < (b.episode ?? 0)
+        }
+    }
 
     private var seasons: [Int] {
-        guard let meta else { return [] }
-        let numbers = Set(meta.videos.compactMap(\.season))
-        // Specials (season 0) go last.
-        return numbers.sorted { a, b in
-            if a == 0 { return false }
-            if b == 0 { return true }
-            return a < b
+        var seen: [Int] = []
+        for video in orderedVideos {
+            if let s = video.season, !seen.contains(s) { seen.append(s) }
         }
+        return seen
     }
 
     private var episodes: [StremioMeta.Video] {
-        guard let meta else { return [] }
-        if seasons.isEmpty { return meta.videos }
-        return meta.videos
-            .filter { $0.season == season }
-            .sorted { ($0.episode ?? 0) < ($1.episode ?? 0) }
+        seasons.isEmpty ? orderedVideos : orderedVideos.filter { $0.season == season }
     }
 
-    private var isSeries: Bool {
-        if let meta, !meta.videos.isEmpty { return true }
-        return ref.type == "series"
+    private var movieRef: VideoRef {
+        VideoRef(type: type, metaId: ref.id, videoId: meta?.id ?? ref.id, name: name,
+                 poster: meta?.poster ?? ref.poster, episodeLabel: nil, background: background)
     }
+
+    private func videoRef(_ video: StremioMeta.Video) -> VideoRef {
+        let label = [video.code, video.title].compactMap { $0 }.joined(separator: " · ")
+        return VideoRef(type: type, metaId: ref.id, videoId: video.id, name: name,
+                        poster: meta?.poster ?? ref.poster,
+                        episodeLabel: label.isEmpty ? video.id : label,
+                        background: video.thumbnail ?? background)
+    }
+
+    private func route(for video: StremioMeta.Video) -> StreamsRoute {
+        let all = orderedVideos
+        guard let index = all.firstIndex(where: { $0.id == video.id }) else {
+            return StreamsRoute(video: videoRef(video))
+        }
+        let following = all[(index + 1)...]
+            .filter { video.season == 0 || $0.season != 0 }
+            .prefix(40)
+            .map { videoRef($0) }
+        return StreamsRoute(video: videoRef(video), queue: Array(following))
+    }
+
+    /// What the big button plays: the episode you were watching, or the first one.
+    private var primary: (route: StreamsRoute, label: String, resume: Bool)? {
+        if isSeries {
+            let entries = watch.entries.filter { $0.ref.metaId == ref.id }
+            if let latest = entries.first,
+               let video = orderedVideos.first(where: { $0.id == latest.ref.videoId }) {
+                return (route(for: video), "Resume \(video.code ?? "")".trimmingCharacters(in: .whitespaces), true)
+            }
+            guard let first = orderedVideos.first(where: { $0.season != 0 }) ?? orderedVideos.first else { return nil }
+            return (route(for: first), "Play \(first.code ?? "")".trimmingCharacters(in: .whitespaces), false)
+        }
+        let resume = watch.resumePosition(for: movieRef.videoId) != nil
+        return (StreamsRoute(video: movieRef), resume ? "Resume" : "Play", resume)
+    }
+
+    // MARK: Body
 
     var body: some View {
-        List {
-            Section {
-                header
-            }
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-
-            if loading {
-                Section { ProgressView().frame(maxWidth: .infinity) }
-            } else if isSeries && !episodes.isEmpty {
-                if seasons.count > 1 {
-                    Section {
-                        Picker("Season", selection: $season) {
-                            ForEach(seasons, id: \.self) { number in
-                                Text(number == 0 ? "Specials" : "Season \(number)").tag(number)
-                            }
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                hero
+                VStack(alignment: .leading, spacing: 26) {
+                    descriptionBlock
+                    if isSeries && !orderedVideos.isEmpty {
+                        seasonPicker
+                        episodeShelf
                     }
-                }
-                Section("Episodes") {
-                    ForEach(episodes) { video in
-                        NavigationLink(value: videoRef(for: video)) {
-                            EpisodeRow(video: video)
-                        }
+                    if loading && meta == nil {
+                        ProgressView().frame(maxWidth: .infinity)
                     }
+                    infoBlock
                 }
-            } else {
-                Section {
-                    NavigationLink(value: movieRef) {
-                        Label("Find streams", systemImage: "play.circle.fill")
-                            .font(.headline)
-                    }
-                }
+                .padding(.top, 18)
+                .padding(.bottom, 40)
             }
         }
-        .listStyle(.insetGrouped)
-        .navigationTitle(meta?.name ?? ref.name)
+        .scrollIndicators(.hidden)
+        .background(Color.black)
+        .ignoresSafeArea(edges: .top)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ZStack(alignment: .bottomLeading) {
-                PosterImage(url: meta?.background ?? meta?.poster ?? ref.poster)
-                    .frame(height: 200)
-                    .frame(maxWidth: .infinity)
+    private var hero: some View {
+        GeometryReader { geo in
+            let minY = geo.frame(in: .scrollView).minY
+            let stretch = max(minY, 0)
+            ZStack(alignment: .bottom) {
+                RemoteImage(url: background, maxPixel: 1600)
+                    .frame(width: geo.size.width, height: heroHeight + stretch)
                     .clipped()
-                LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 200)
-                Text(meta?.name ?? ref.name)
-                    .font(.title2.bold())
+                    .offset(y: -stretch)
+                LinearGradient(stops: [
+                    .init(color: .clear, location: 0.3),
+                    .init(color: .black.opacity(0.6), location: 0.62),
+                    .init(color: .black, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+
+                VStack(spacing: 14) {
+                    TitleArt(logo: meta?.logo ?? ref.logo, name: name, maxHeight: 96)
+                        .padding(.horizontal, 44)
+                    factsLine
+                    actionButtons
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
+            }
+        }
+        .frame(height: heroHeight)
+    }
+
+    private var factsLine: some View {
+        let facts: [String] = [
+            meta?.releaseInfo,
+            meta?.runtime,
+            meta?.genres.prefix(2).joined(separator: ", "),
+            meta?.imdbRating.map { "IMDb \($0)" },
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+        return Text(facts.joined(separator: "  ·  "))
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.white.opacity(0.75))
+            .multilineTextAlignment(.center)
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 12) {
+            if let primary {
+                NavigationLink(value: primary.route) {
+                    Label(primary.label, systemImage: "play.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .foregroundStyle(.black)
+                }
+                .buttonStyle(CardButtonStyle())
+            } else {
+                RoundedRectangle(cornerRadius: 12).fill(.white.opacity(0.15)).frame(height: 50)
+            }
+
+            let saved = favorites.contains(ref.id)
+            Button {
+                withAnimation(.spring(duration: 0.3)) {
+                    favorites.toggle(MetaRef(id: ref.id, type: type, name: name,
+                                             poster: meta?.poster ?? ref.poster,
+                                             background: background, logo: meta?.logo ?? ref.logo))
+                }
+            } label: {
+                Image(systemName: saved ? "checkmark" : "plus")
+                    .font(.headline)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 50, height: 50)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .foregroundStyle(.white)
-                    .padding()
             }
-            VStack(alignment: .leading, spacing: 6) {
-                let facts = [meta?.releaseInfo, meta?.runtime, meta?.imdbRating.map { "IMDb \($0)" }].compactMap { $0 }
-                if !facts.isEmpty {
-                    Text(facts.joined(separator: " · ")).font(.subheadline).foregroundStyle(.secondary)
-                }
-                if let genres = meta?.genres, !genres.isEmpty {
-                    Text(genres.prefix(4).joined(separator: ", ")).font(.footnote).foregroundStyle(.secondary)
-                }
-                if let description = meta?.description {
-                    Text(description).font(.footnote)
-                }
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
+            .buttonStyle(CardButtonStyle())
+            .sensoryFeedback(.success, trigger: saved)
         }
     }
 
-    private var movieRef: VideoRef {
-        VideoRef(type: meta?.type ?? ref.type, metaId: ref.id, videoId: meta?.id ?? ref.id,
-                 name: meta?.name ?? ref.name, poster: meta?.poster ?? ref.poster, episodeLabel: nil)
+    @ViewBuilder
+    private var descriptionBlock: some View {
+        if let description = meta?.description, !description.isEmpty {
+            Text(description)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(expandedDescription ? nil : 3)
+                .padding(.horizontal, 20)
+                .onTapGesture { withAnimation(.easeInOut) { expandedDescription.toggle() } }
+        }
     }
 
-    private func videoRef(for video: StremioMeta.Video) -> VideoRef {
-        let label = [video.code, video.title].compactMap { $0 }.joined(separator: " · ")
-        return VideoRef(type: meta?.type ?? ref.type, metaId: ref.id, videoId: video.id,
-                        name: meta?.name ?? ref.name, poster: meta?.poster ?? ref.poster,
-                        episodeLabel: label.isEmpty ? video.id : label)
+    private var seasonPicker: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(seasons, id: \.self) { number in
+                    Button {
+                        withAnimation(.spring(duration: 0.3)) { season = number }
+                    } label: {
+                        Text(number == 0 ? "Specials" : "Season \(number)")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(season == number ? Color.white : Color.white.opacity(0.12), in: Capsule())
+                            .foregroundStyle(season == number ? .black : .white)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollIndicators(.hidden)
+        .sensoryFeedback(.selection, trigger: season)
+    }
+
+    private var episodeShelf: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: 14) {
+                ForEach(episodes) { video in
+                    NavigationLink(value: route(for: video)) {
+                        EpisodeCard(video: video, progress: progress(for: video))
+                    }
+                    .buttonStyle(CardButtonStyle())
+                }
+            }
+            .scrollTargetLayout()
+            .padding(.horizontal, 20)
+        }
+        .scrollTargetBehavior(.viewAligned)
+        .scrollIndicators(.hidden)
+        .id(season)
+        .transition(.opacity)
+    }
+
+    @ViewBuilder
+    private var infoBlock: some View {
+        if let meta {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Information").font(.title3.bold()).foregroundStyle(.white)
+                if !meta.genres.isEmpty { infoRow("Genres", meta.genres.joined(separator: ", ")) }
+                if let released = meta.releaseInfo { infoRow("Released", released) }
+                if let runtime = meta.runtime { infoRow("Runtime", runtime) }
+                if let rating = meta.imdbRating { infoRow("IMDb", rating) }
+                if isSeries { infoRow("Episodes", "\(orderedVideos.count)") }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label).foregroundStyle(.white.opacity(0.5)).frame(width: 90, alignment: .leading)
+            Text(value).foregroundStyle(.white.opacity(0.85))
+        }
+        .font(.subheadline)
+    }
+
+    private func progress(for video: StremioMeta.Video) -> Double? {
+        watch.entries.first { $0.ref.videoId == video.id }?.progress
     }
 
     private func load() async {
@@ -123,35 +276,60 @@ struct MetaDetailView: View {
         defer { loading = false }
         for addon in addons.supporting("meta", type: ref.type, id: ref.id) {
             if let found = try? await StremioClient.meta(addon, type: ref.type, id: ref.id) {
-                meta = found
+                withAnimation(.easeOut(duration: 0.25)) { meta = found }
                 break
             }
         }
-        // Start on the first regular season.
-        if let first = seasons.first { season = first }
+        // Open on the season you were watching, otherwise the first regular season.
+        if let latest = watch.entries.first(where: { $0.ref.metaId == ref.id }),
+           let video = orderedVideos.first(where: { $0.id == latest.ref.videoId }),
+           let s = video.season {
+            season = s
+        } else if let first = seasons.first {
+            season = first
+        }
     }
 }
 
-struct EpisodeRow: View {
+struct EpisodeCard: View {
     let video: StremioMeta.Video
+    let progress: Double?
+    private let width: CGFloat = 280
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            PosterImage(url: video.thumbnail)
-                .frame(width: 112, height: 63)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            VStack(alignment: .leading, spacing: 3) {
-                Text([video.code, video.title].compactMap { $0 }.joined(separator: " · "))
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-                if let released = video.released, released.count >= 10 {
-                    Text(String(released.prefix(10))).font(.caption2).foregroundStyle(.secondary)
-                }
-                if let overview = video.overview {
-                    Text(overview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .bottomLeading) {
+                RemoteImage(url: video.thumbnail, maxPixel: 700, placeholderSymbol: "tv")
+                    .frame(width: width, height: width * 9 / 16)
+                if let progress {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.white.opacity(0.3))
+                            Capsule().fill(.white).frame(width: geo.size.width * progress)
+                        }
+                    }
+                    .frame(height: 4)
+                    .padding(10)
                 }
             }
+            .frame(width: width, height: width * 9 / 16)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            Text(video.episode.map { "EPISODE \($0)" } ?? "EPISODE")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.5))
+            Text(video.title ?? "Episode")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            if let overview = video.overview {
+                Text(overview)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+            }
         }
-        .padding(.vertical, 2)
+        .frame(width: width, alignment: .leading)
     }
 }

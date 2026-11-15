@@ -11,6 +11,12 @@ struct PlayItem: Identifiable {
     var headers: [String: String] = [:]
     /// Set when played from Discover, so the position is remembered for resuming.
     var watch: VideoRef? = nil
+    /// Episodes that follow this one, for "Next episode" and autoplay.
+    var queue: [VideoRef] = []
+    /// The addon and release this stream came from, so the next episode can match it.
+    var addonId: String? = nil
+    var bingeGroup: String? = nil
+    var poster: String? = nil
     /// True for a file picked from the Files app: access must be released when playback ends.
     var securityScoped: Bool = false
 

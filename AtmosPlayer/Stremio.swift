@@ -174,7 +174,11 @@ struct MetaPreview: Decodable, Identifiable, Hashable {
     let type: String
     let name: String
     let poster: String?
+    let background: String?
+    let logo: String?
+    let description: String?
     let releaseInfo: String?
+    let imdbRating: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -185,7 +189,50 @@ struct MetaPreview: Decodable, Identifiable, Hashable {
         self.name = name
         type = c.lossyString(AnyKey("type")) ?? "movie"
         poster = c.lossyString(AnyKey("poster"))
+        background = c.lossyString(AnyKey("background"))
+        logo = c.lossyString(AnyKey("logo"))
+        description = c.lossyString(AnyKey("description"))
         releaseInfo = c.lossyString(AnyKey("releaseInfo"))
+        imdbRating = c.lossyString(AnyKey("imdbRating"))
+    }
+}
+
+/// A subtitle file offered by a subtitles addon (e.g. OpenSubtitles).
+struct AddonSubtitle: Decodable, Identifiable, Hashable {
+    let id: String
+    let url: String
+    let lang: String
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        guard let url = c.lossyString(AnyKey("url")) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "subtitle needs url"))
+        }
+        self.url = url
+        id = c.lossyString(AnyKey("id")) ?? url
+        lang = c.lossyString(AnyKey("lang")) ?? "und"
+    }
+
+    /// "English" for "eng" / "en", the raw code when unknown.
+    var languageName: String {
+        let code = lang.lowercased()
+        if let name = Locale.current.localizedString(forLanguageCode: code) { return name }
+        let threeToTwo = ["eng": "en", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de",
+                          "ita": "it", "por": "pt", "pob": "pt", "hin": "hi", "jpn": "ja", "kor": "ko",
+                          "chi": "zh", "zho": "zh", "ara": "ar", "rus": "ru", "dut": "nl", "nld": "nl",
+                          "tur": "tr", "pol": "pl", "swe": "sv", "tam": "ta", "tel": "te", "ben": "bn"]
+        if let two = threeToTwo[code], let name = Locale.current.localizedString(forLanguageCode: two) {
+            return code == "pob" ? "\(name) (Brazil)" : name
+        }
+        return lang
+    }
+}
+
+private struct SubtitlesResponse: Decodable {
+    let subtitles: [AddonSubtitle]
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        subtitles = c.lossyArray(AddonSubtitle.self, AnyKey("subtitles"))
     }
 }
 
@@ -263,6 +310,9 @@ struct StremioStream: Decodable, Identifiable {
     let title: String?
     let description: String?
     let filename: String?
+    /// Streams of the same release across episodes share this, which is how the next episode
+    /// gets the same quality and source.
+    let bingeGroup: String?
     let requestHeaders: [String: String]
 
     init(from decoder: Decoder) throws {
@@ -276,15 +326,18 @@ struct StremioStream: Decodable, Identifiable {
         description = c.lossyString(AnyKey("description"))
 
         var filename: String?
+        var binge: String?
         var headers: [String: String] = [:]
         if let hints = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("behaviorHints")) {
             filename = hints.lossyString(AnyKey("filename"))
+            binge = hints.lossyString(AnyKey("bingeGroup"))
             if let proxy = try? hints.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("proxyHeaders")),
                let request = try? proxy.decodeIfPresent([String: String].self, forKey: AnyKey("request")) {
                 headers = request
             }
         }
         self.filename = filename
+        bingeGroup = binge
         requestHeaders = headers
     }
 
@@ -412,6 +465,11 @@ enum StremioClient {
     static func streams(_ addon: InstalledAddon, type: String, id: String) async throws -> [StremioStream] {
         let url = try resourceURL(addon, "stream", type, id)
         return try JSONDecoder().decode(StreamResponse.self, from: try await get(url)).streams
+    }
+
+    static func subtitles(_ addon: InstalledAddon, type: String, id: String) async throws -> [AddonSubtitle] {
+        let url = try resourceURL(addon, "subtitles", type, id)
+        return try JSONDecoder().decode(SubtitlesResponse.self, from: try await get(url)).subtitles
     }
 
     private static func resourceURL(_ addon: InstalledAddon, _ resource: String, _ type: String, _ id: String, extra: String = "") throws -> URL {

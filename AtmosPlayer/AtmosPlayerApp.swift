@@ -8,12 +8,18 @@ final class AppModel: ObservableObject {
     let engineError: String?
 
     init() {
-        // Mirror the engine's diagnostic lines into the in-app debug overlay.
+        // Mirror the engine's diagnostic lines into the in-app playback info overlay.
         EngineLog.handler = { line in LogStore.shared.append(line) }
         do {
             let created = try AetherEngine()
             // This app plays no other audio, so let the engine release the session on stop.
             created.deactivatesAudioSessionOnStop = true
+            // Lock screen / Control Center: title, artwork, play/pause and seeking.
+            created.ownsVideoNowPlayingSession = true
+            created.ownsVideoNowPlayingCommands = true
+            created.ownsSoftwareNowPlaying = true
+            // The subtitle timing control goes to ±10 s; keeping less cue history saves memory.
+            created.maximumSubtitleOffsetSeconds = 10
             engine = created
             engineError = nil
         } catch {
@@ -25,10 +31,12 @@ final class AppModel: ObservableObject {
 
 @main
 struct AtmosPlayerApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
     @StateObject private var history = HistoryStore()
     @StateObject private var addons = AddonStore()
     @StateObject private var watch = WatchStore()
+    @StateObject private var favorites = FavoritesStore()
     @StateObject private var coordinator = PlayerCoordinator()
 
     var body: some Scene {
@@ -38,8 +46,10 @@ struct AtmosPlayerApp: App {
                 .environmentObject(history)
                 .environmentObject(addons)
                 .environmentObject(watch)
+                .environmentObject(favorites)
                 .environmentObject(coordinator)
                 .preferredColorScheme(.dark)
+                .tint(.white)
         }
     }
 }
@@ -48,21 +58,29 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var history: HistoryStore
     @EnvironmentObject private var watch: WatchStore
+    @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
 
     var body: some View {
         TabView {
-            DiscoverView()
-                .tabItem { Label("Discover", systemImage: "sparkles.tv") }
-            HomeView()
-                .tabItem { Label("Links", systemImage: "link") }
-            AddonsView()
-                .tabItem { Label("Addons", systemImage: "puzzlepiece.extension") }
+            Tab("Home", systemImage: "play.tv.fill") {
+                HomeScreen()
+            }
+            Tab("Links", systemImage: "link") {
+                HomeView()
+            }
+            Tab("Addons", systemImage: "puzzlepiece.extension.fill") {
+                AddonsView()
+            }
+            Tab(role: .search) {
+                SearchScreen()
+            }
         }
         .fullScreenCover(item: $coordinator.current) { item in
             if let engine = model.engine {
                 PlayerView(item: item, engine: engine)
                     .environmentObject(watch)
+                    .environmentObject(addons)
             } else {
                 Text("Player engine unavailable: \(model.engineError ?? "unknown error")")
                     .padding()

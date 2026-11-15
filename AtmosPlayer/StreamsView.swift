@@ -1,8 +1,10 @@
 import SwiftUI
 import UIKit
 
+/// Every stream the installed addons return for one movie or episode.
 struct StreamsView: View {
     let video: VideoRef
+    var queue: [VideoRef] = []
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @EnvironmentObject private var watch: WatchStore
@@ -16,7 +18,7 @@ struct StreamsView: View {
 
     @State private var results: [AddonResult] = []
     @State private var loading = true
-    @State private var atmosOnly = false
+    @AppStorage("streams.atmosOnly") private var atmosOnly = false
 
     private var sources: [InstalledAddon] {
         addons.supporting("stream", type: video.type, id: video.videoId)
@@ -25,16 +27,26 @@ struct StreamsView: View {
     var body: some View {
         List {
             Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(video.name).font(.headline)
-                    if let label = video.episodeLabel {
-                        Text(label).font(.subheadline).foregroundStyle(.secondary)
-                    }
-                    if let resume = watch.resumePosition(for: video.videoId) {
-                        Text("Resumes at \(formatTime(resume))").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 14) {
+                    RemoteImage(url: video.background ?? video.poster, maxPixel: 400)
+                        .frame(width: 120, height: 68)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(video.name).font(.headline).lineLimit(2)
+                        if let label = video.episodeLabel {
+                            Text(label).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        if let resume = watch.resumePosition(for: video.videoId) {
+                            Label("Resumes at \(formatTime(resume))", systemImage: "clock.arrow.circlepath")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
-                Toggle("Only streams labelled Atmos", isOn: $atmosOnly)
+                .listRowBackground(Color.clear)
+                Toggle(isOn: $atmosOnly.animation()) {
+                    Label("Dolby Atmos only", systemImage: "hifispeaker.2.fill")
+                }
             }
 
             if sources.isEmpty {
@@ -56,17 +68,27 @@ struct StreamsView: View {
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(shown) { stream in
-                            StreamRow(stream: stream) { play(stream) }
+                            StreamRow(stream: stream) { play(stream, from: result.id) }
                         }
                     }
                 }
             }
 
             if loading {
-                Section { ProgressView().frame(maxWidth: .infinity) }
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Text("Asking \(sources.count) addon\(sources.count == 1 ? "" : "s")…")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
             }
         }
-        .navigationTitle("Streams")
+        .scrollContentBackground(.hidden)
+        .background(Color.black)
+        .navigationTitle("Choose a Stream")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .refreshable { await load() }
@@ -93,15 +115,22 @@ struct StreamsView: View {
             var arrived: [(Int, AddonResult)] = []
             for await item in group {
                 arrived.append(item)
-                results = arrived.sorted { $0.0 < $1.0 }.map { $0.1 }
+                let ordered = arrived.sorted { $0.0 < $1.0 }.map { $0.1 }
+                withAnimation(.easeOut(duration: 0.2)) { results = ordered }
             }
         }
     }
 
-    private func play(_ stream: StremioStream) {
+    private func play(_ stream: StremioStream, from addonId: String) {
         guard let url = stream.playableURL else { return }
-        coordinator.play(PlayItem(url: url, title: video.displayTitle,
-                                  headers: stream.requestHeaders, watch: video))
+        coordinator.play(PlayItem(url: url,
+                                  title: video.displayTitle,
+                                  headers: stream.requestHeaders,
+                                  watch: video,
+                                  queue: queue,
+                                  addonId: addonId,
+                                  bingeGroup: stream.bingeGroup,
+                                  poster: video.poster))
     }
 }
 
@@ -111,38 +140,43 @@ struct StreamRow: View {
 
     var body: some View {
         Button(action: onPlay) {
-            VStack(alignment: .leading, spacing: 4) {
-                if !stream.badges.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(stream.badges, id: \.self) { badge in
-                            Text(badge)
-                                .font(.caption2.bold())
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(badge == "Atmos" ? Color.accentColor : Color.gray.opacity(0.35),
-                                            in: RoundedRectangle(cornerRadius: 4))
-                                .foregroundStyle(.white)
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: stream.playableURL == nil ? "nosign" : "play.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(stream.playableURL == nil ? Color.secondary : Color.white)
+                VStack(alignment: .leading, spacing: 5) {
+                    if !stream.badges.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(stream.badges, id: \.self) { badge in
+                                Text(badge)
+                                    .font(.caption2.weight(.heavy))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(badge == "Atmos" ? Color.white : Color.white.opacity(0.15),
+                                                in: RoundedRectangle(cornerRadius: 4))
+                                    .foregroundStyle(badge == "Atmos" ? Color.black : Color.white)
+                            }
                         }
                     }
+                    if let name = stream.name {
+                        Text(name).font(.subheadline.weight(.semibold))
+                    }
+                    if let detail = stream.title ?? stream.description {
+                        Text(detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if stream.playableURL == nil {
+                        Text(stream.unplayableReason).font(.caption2).foregroundStyle(.orange)
+                    }
                 }
-                if let name = stream.name {
-                    Text(name).font(.subheadline.weight(.semibold))
-                }
-                if let detail = stream.title ?? stream.description {
-                    Text(detail).font(.caption).foregroundStyle(.secondary)
-                }
-                if stream.playableURL == nil {
-                    Text(stream.unplayableReason).font(.caption2).foregroundStyle(.orange)
-                }
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(stream.playableURL == nil)
         .contextMenu {
             if let url = stream.playableURL {
-                Button("Copy link") { UIPasteboard.general.string = url.absoluteString }
+                Button("Copy Link", systemImage: "doc.on.doc") { UIPasteboard.general.string = url.absoluteString }
             }
         }
     }
