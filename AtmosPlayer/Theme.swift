@@ -1,9 +1,14 @@
 import SwiftUI
 import UIKit
 
-/// App-wide look: the logo's violet as the accent for switches and highlights.
+/// App-wide look, taken from the icon: violet → indigo → cyan on near-black.
 enum Brand {
-    static let accent = Color(red: 0.49, green: 0.38, blue: 1.0)
+    /// Switches, selections, links.
+    static let accent = Color(red: 0.42, green: 0.40, blue: 1.0)
+    static let violet = Color(red: 0.78, green: 0.42, blue: 1.0)
+    static let cyan = Color(red: 0.18, green: 0.88, blue: 1.0)
+    /// The icon's sweep, for progress bars and highlights.
+    static let gradient = LinearGradient(colors: [violet, accent, cyan], startPoint: .leading, endPoint: .trailing)
 }
 
 /// Switches in the brand colour. The app's tint is white (Apple TV style buttons), which made

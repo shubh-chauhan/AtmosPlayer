@@ -179,6 +179,8 @@ struct MetaPreview: Decodable, Identifiable, Hashable {
     let description: String?
     let releaseInfo: String?
     let imdbRating: String?
+    let genres: [String]
+    let runtime: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -194,6 +196,8 @@ struct MetaPreview: Decodable, Identifiable, Hashable {
         description = c.lossyString(AnyKey("description"))
         releaseInfo = c.lossyString(AnyKey("releaseInfo"))
         imdbRating = c.lossyString(AnyKey("imdbRating"))
+        genres = c.stringArray(AnyKey("genres")) ?? c.stringArray(AnyKey("genre")) ?? []
+        runtime = c.lossyString(AnyKey("runtime"))
     }
 }
 

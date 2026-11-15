@@ -30,6 +30,8 @@ struct PlayerView: View {
     @State private var locked = false
     @State private var scrubbing = false
     @State private var hideTask: Task<Void, Never>?
+    /// A menu was opened: keep the controls up (hiding them closes the menu mid-tap).
+    @State private var menuHeld = false
     @State private var countdownTask: Task<Void, Never>?
     @State private var sidePanel: PlayerSidePanel?
     @State private var fill = false
@@ -236,6 +238,7 @@ struct PlayerView: View {
     }
 
     private func toggleControls() {
+        menuHeld = false
         withAnimation(.easeInOut(duration: 0.25)) { showControls.toggle() }
         if showControls { scheduleHide() }
     }
@@ -245,13 +248,14 @@ struct PlayerView: View {
         hideTask?.cancel()
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard !Task.isCancelled, engine.state == .playing, !scrubbing, sidePanel == nil else { return }
+            guard !Task.isCancelled, engine.state == .playing, !scrubbing, sidePanel == nil, !menuHeld else { return }
             withAnimation(.easeInOut(duration: 0.35)) { showControls = false }
         }
     }
 
     /// Keeps the controls up while a menu is open (hiding them would close the menu).
     private func holdControls() {
+        menuHeld = true
         hideTask?.cancel()
     }
 
@@ -372,29 +376,9 @@ struct PlayerView: View {
     // MARK: Menus
 
     private var speedMenu: some View {
-        Menu {
-            Picker("Playback Speed", selection: Binding(get: { speed }, set: { setSpeed($0) })) {
-                ForEach(speedOptions, id: \.self) { value in
-                    Text(speedLabel(value)).tag(value)
-                }
-            }
-        } label: {
-            Group {
-                if speed == 1 {
-                    Image(systemName: "gauge.with.dots.needle.67percent")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                } else {
-                    Text(speedLabel(speed))
-                        .font(.system(size: 15, weight: .bold).monospacedDigit())
-                        .frame(minWidth: 44, minHeight: 44)
-                        .padding(.horizontal, 4)
-                }
-            }
-            .contentShape(Capsule())
-            .glass(Capsule(), interactive: true)
-        }
-        .simultaneousGesture(TapGesture().onEnded { holdControls() })
+        SpeedMenuButton(speed: speed, options: speedOptions, label: speedLabel,
+                        onOpen: holdControls, onPick: { setSpeed($0) })
+            .equatable()
     }
 
     private var audioSubtitleMenu: some View {
@@ -402,30 +386,22 @@ struct PlayerView: View {
     }
 
     private var moreMenu: some View {
-        Menu {
-            Button(fill ? "Fit to Screen" : "Fill Screen",
-                   systemImage: fill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+        MoreMenuButton(fill: fill, hasChapters: status.hasChapters, onOpen: holdControls) { action in
+            menuHeld = false
+            switch action {
+            case .fill:
                 setFill(!fill)
                 interacted()
-            }
-            if status.hasChapters {
-                Button("Chapters", systemImage: "list.bullet.rectangle") { openPanel(.chapters) }
-            }
-            Button("Audio & Subtitles", systemImage: "text.bubble") { openPanel(.tracks) }
-            Button("Playback Settings", systemImage: "slider.horizontal.3") { openPanel(.settings) }
-            Button("Stream Details", systemImage: "waveform.path.ecg") { openPanel(.details) }
-            Button("Lock Controls", systemImage: "lock.fill") {
+            case .chapters: openPanel(.chapters)
+            case .tracks: openPanel(.tracks)
+            case .settings: openPanel(.settings)
+            case .details: openPanel(.details)
+            case .lock:
                 withAnimation { locked = true }
                 scheduleHide()
             }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-                .glass(Circle(), interactive: true)
         }
-        .simultaneousGesture(TapGesture().onEnded { holdControls() })
+        .equatable()
     }
 
     private var lockedOverlay: some View {
@@ -459,7 +435,15 @@ struct PlayerView: View {
                           onCancel: {
                               countdownTask?.cancel()
                               nextState = .idle
+                          },
+                          onNearEnd: { startNextCountdown() },
+                          onLeave: {
+                              if case .countdown = nextState {
+                                  countdownTask?.cancel()
+                                  nextState = .idle
+                              }
                           })
+                .id(item.id)
         }
     }
 
@@ -537,7 +521,8 @@ struct PlayerView: View {
         options.dolbyVisionHandling = VideoPreferences.dolbyVisionOn ? .automatic : .baseLayerOnly
         // Sound: TrueHD Atmos and DTS:X keep their heights (7.1.4, spatialised on AirPods).
         options.objectAudioRendering = AudioPreferences.objectAudioOn ? .render(.l714) : .off
-        let resume = item.watch.flatMap { watch.resumePosition(for: $0.videoId) }.flatMap { $0 > 0 ? $0 : nil }
+        let resume = item.startOver ? nil
+            : item.watch.flatMap { watch.resumePosition(for: $0.videoId) }.flatMap { $0 > 0 ? $0 : nil }
 
         var info: [String: Any] = [MPMediaItemPropertyTitle: item.watch?.episodeLabel ?? item.displayTitle]
         if let name = item.watch?.name, item.watch?.episodeLabel != nil {
@@ -624,6 +609,7 @@ struct PlayerView: View {
     private let speedOptions: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
     private func setSpeed(_ value: Float) {
+        menuHeld = false
         speed = value
         engine.setRate(value)
         interacted()
@@ -744,8 +730,9 @@ struct BufferingIndicator: View {
     }
 }
 
-/// Shows the up-next card in the last 40 seconds, or while the countdown runs. Watches the
-/// clock itself so the rest of the player does not redraw on every tick.
+/// Shows the up-next card once the credits start (a "Credits" chapter, or the last stretch of
+/// the episode), and while the countdown runs. Watches the clock itself so the rest of the
+/// player does not redraw on every tick.
 struct UpNextOverlay: View {
     @ObservedObject var engine: AetherEngine
     @ObservedObject var clock: PlaybackClock
@@ -754,22 +741,59 @@ struct UpNextOverlay: View {
     let lifted: Bool
     let onPlay: () -> Void
     let onCancel: () -> Void
+    let onNearEnd: () -> Void
+    let onLeave: () -> Void
+
+    @State private var dismissed = false
+
+    /// Where the end credits begin.
+    private var creditsStart: Double? {
+        let duration = engine.duration
+        guard duration > 120 else { return nil }
+        if let chapter = engine.mediaChapters.last(where: { chapter in
+            let name = chapter.name.lowercased()
+            return ["credit", "outro", "ending", "end title", "closing"].contains { name.contains($0) }
+        }), chapter.startSeconds > duration * 0.6 {
+            return chapter.startSeconds
+        }
+        // No chapter: about the last 3 % (45 s to 2 min), where credits usually roll.
+        return duration - min(max(duration * 0.03, 45), 120)
+    }
+
+    private var nearEnd: Bool {
+        guard let creditsStart else { return false }
+        return clock.currentTime >= creditsStart && clock.currentTime < engine.duration
+    }
 
     var body: some View {
-        let remaining = engine.duration - clock.currentTime
-        let nearEnd = engine.duration > 120 && remaining < 40 && remaining > 0
-        if nearEnd || state != .idle {
-            VStack {
-                Spacer()
-                HStack {
+        let near = nearEnd
+        Group {
+            if (near && !dismissed) || state != .idle {
+                VStack {
                     Spacer()
-                    UpNextCard(next: next, state: state, onPlay: onPlay, onCancel: onCancel)
+                    HStack {
+                        Spacer()
+                        UpNextCard(next: next, state: state, onPlay: onPlay, onCancel: onCancel,
+                                   onClose: {
+                                       dismissed = true
+                                       onCancel()
+                                   })
+                    }
                 }
+                .padding(.horizontal, 24)
+                .padding(.bottom, lifted ? 130 : 30)
+                .animation(.easeInOut(duration: 0.25), value: lifted)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, lifted ? 130 : 30)
-            .animation(.easeInOut(duration: 0.25), value: lifted)
-            .transition(.move(edge: .trailing).combined(with: .opacity))
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: near && !dismissed)
+        .onChange(of: near) { _, now in
+            if now {
+                if !dismissed { onNearEnd() }
+            } else {
+                dismissed = false
+                onLeave()
+            }
         }
     }
 }
@@ -779,9 +803,10 @@ struct UpNextCard: View {
     let state: PlayerView.NextState
     let onPlay: () -> Void
     let onCancel: () -> Void
+    var onClose: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             RemoteImage(url: next.background ?? next.poster, maxPixel: 400)
                 .frame(width: 128, height: 72)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -817,7 +842,22 @@ struct UpNextCard: View {
         }
         .foregroundStyle(.white)
         .padding(12)
-        .frame(maxWidth: 400)
+        .padding(.trailing, onClose == nil ? 0 : 26)
+        .frame(maxWidth: 420)
+        .overlay(alignment: .topTrailing) {
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(PressScaleButtonStyle())
+                .foregroundStyle(.white.opacity(0.75))
+                .padding(8)
+                .accessibilityLabel("Hide Up Next")
+            }
+        }
         .glass(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
@@ -1009,5 +1049,81 @@ struct SubtitleOverlay: View {
             }
         }
         .allowsHitTesting(false)
+    }
+}
+
+
+// MARK: - Menus that don't flicker
+
+/// The playback-speed menu. Equatable on what it shows, so the player's redraws (buffering,
+/// play/pause, the clock) never rebuild it while it is open; that rebuild was the flicker.
+struct SpeedMenuButton: View, Equatable {
+    let speed: Float
+    let options: [Float]
+    let label: (Float) -> String
+    let onOpen: () -> Void
+    let onPick: (Float) -> Void
+
+    static func == (a: Self, b: Self) -> Bool { a.speed == b.speed && a.options == b.options }
+
+    var body: some View {
+        Menu {
+            Picker("Playback Speed", selection: Binding(get: { speed }, set: onPick)) {
+                ForEach(options, id: \.self) { value in
+                    Text(label(value)).tag(value)
+                }
+            }
+        } label: {
+            Group {
+                if speed == 1 {
+                    Image(systemName: "gauge.with.dots.needle.67percent")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                } else {
+                    Text(label(speed))
+                        .font(.system(size: 15, weight: .bold).monospacedDigit())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 4)
+                }
+            }
+            .contentShape(Capsule())
+            .glass(Capsule(), interactive: true)
+        }
+        .simultaneousGesture(TapGesture().onEnded { onOpen() })
+    }
+}
+
+/// The ellipsis menu, rebuilt only when Fit/Fill or chapters change.
+struct MoreMenuButton: View, Equatable {
+    enum Action { case fill, chapters, tracks, settings, details, lock }
+
+    let fill: Bool
+    let hasChapters: Bool
+    let onOpen: () -> Void
+    let onAction: (Action) -> Void
+
+    static func == (a: Self, b: Self) -> Bool { a.fill == b.fill && a.hasChapters == b.hasChapters }
+
+    var body: some View {
+        Menu {
+            Button(fill ? "Fit to Screen" : "Fill Screen",
+                   systemImage: fill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+                onAction(.fill)
+            }
+            if hasChapters {
+                Button("Chapters", systemImage: "list.bullet.rectangle") { onAction(.chapters) }
+            }
+            Button("Audio & Subtitles", systemImage: "text.bubble") { onAction(.tracks) }
+            Button("Playback Settings", systemImage: "slider.horizontal.3") { onAction(.settings) }
+            Button("Stream Details", systemImage: "waveform.path.ecg") { onAction(.details) }
+            Button("Lock Controls", systemImage: "lock.fill") { onAction(.lock) }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .glass(Circle(), interactive: true)
+        }
+        .simultaneousGesture(TapGesture().onEnded { onOpen() })
     }
 }

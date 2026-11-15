@@ -22,6 +22,8 @@ struct PlayItem: Identifiable {
     var stream: SavedStream? = nil
     /// True for a file picked from the Files app: access must be released when playback ends.
     var securityScoped: Bool = false
+    /// Ignore the saved position and play from the start.
+    var startOver: Bool = false
 
     var displayTitle: String {
         if let title, !title.isEmpty { return title }

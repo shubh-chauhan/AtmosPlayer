@@ -1,0 +1,675 @@
+import SwiftUI
+
+// MARK: - Home
+
+/// A storefront like the TV app and Netflix: a featured hero, Continue Watching, Top 10s,
+/// new releases, suggestions, genres. Everything comes from Cinemeta, not from every addon.
+struct HomeScreen: View {
+    @EnvironmentObject private var addons: AddonStore
+    @EnvironmentObject private var watch: WatchStore
+    @EnvironmentObject private var favorites: FavoritesStore
+    @EnvironmentObject private var account: StremioAccount
+    @EnvironmentObject private var coordinator: PlayerCoordinator
+    @ObservedObject private var feed = HomeFeed.shared
+
+    @State private var path = NavigationPath()
+    @State private var startingId: String?
+
+    private var showsHero: Bool { !feed.hero.isEmpty }
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 32) {
+                    if showsHero {
+                        HeroCarousel(items: feed.hero) { open($0) }
+                    } else if feed.loading {
+                        HomeSkeleton()
+                    }
+
+                    continueWatching
+
+                    ForEach(feed.top.prefix(2)) { section in
+                        HomeSectionView(section: section)
+                    }
+
+                    if !favorites.items.isEmpty {
+                        Shelf(title: "My List") {
+                            ForEach(favorites.items, id: \.id) { ref in
+                                NavigationLink(value: ref) {
+                                    PosterCard(title: ref.name, subtitle: nil, poster: ref.poster)
+                                }
+                                .buttonStyle(CardButtonStyle())
+                            }
+                        }
+                    }
+
+                    ForEach(feed.top.dropFirst(2)) { section in
+                        HomeSectionView(section: section)
+                    }
+
+                    if let suggestion = feed.suggestion {
+                        HomeSectionView(section: suggestion)
+                    }
+
+                    if !feed.isEmpty {
+                        GenreBrowser()
+                    }
+
+                    ForEach(feed.rest) { section in
+                        HomeSectionView(section: section)
+                    }
+
+                    if !account.library.isEmpty {
+                        Shelf(title: "From Your Stremio Library") {
+                            ForEach(account.library, id: \.id) { ref in
+                                NavigationLink(value: ref) {
+                                    PosterCard(title: ref.name, subtitle: nil, poster: ref.poster)
+                                }
+                                .buttonStyle(CardButtonStyle())
+                            }
+                        }
+                    }
+
+                    if feed.isEmpty && !feed.loading {
+                        ContentUnavailableView {
+                            Label("Home couldn't load", systemImage: "wifi.exclamationmark")
+                        } description: {
+                            Text("Check your connection and try again.")
+                        } actions: {
+                            Button("Try Again") { Task { await feed.load(force: true) } }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Brand.accent)
+                        }
+                        .padding(.top, 80)
+                    }
+                }
+                .padding(.bottom, 36)
+            }
+            .background(Color.black)
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea(edges: showsHero ? .top : [])
+            .navigationTitle("Home")
+            .toolbar(showsHero ? .hidden : .visible, for: .navigationBar)
+            .modifier(BrowseDestinations())
+            .task { await feed.load() }
+            .task(id: watch.entries.first?.ref.metaId) {
+                await feed.loadSuggestion(from: watch.entries.first)
+            }
+            .refreshable {
+                await account.sync(addons: addons, watch: watch)
+                await feed.load(force: true)
+            }
+            .task {
+                // CI screenshots only: open a title page.
+                if PreviewMode.screen == "detail", path.isEmpty {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    path.append(MetaRef(id: "tt0903747", type: "series", name: "Breaking Bad", poster: nil))
+                }
+            }
+        }
+    }
+
+    // MARK: Continue Watching
+
+    @ViewBuilder
+    private var continueWatching: some View {
+        if !watch.entries.isEmpty {
+            Shelf(title: "Continue Watching", spacing: 14) {
+                ForEach(watch.entries) { entry in
+                    ContinueTile(entry: entry, busy: startingId == entry.id) {
+                        Task { await resume(entry.ref) }
+                    } actions: {
+                        continueActions(entry)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Long-press (or the ••• button) on a Continue Watching tile.
+    @ViewBuilder
+    private func continueActions(_ entry: WatchStore.Entry) -> some View {
+        Button("Resume", systemImage: "play.fill") {
+            Task { await resume(entry.ref) }
+        }
+        Button("Choose Another Stream…", systemImage: "list.bullet.rectangle") {
+            Task { await chooseStream(entry.ref) }
+        }
+        Button("Play from Beginning", systemImage: "backward.end.fill") {
+            Task { await resume(entry.ref, startOver: true) }
+        }
+        Button(entry.ref.type == "series" ? "Go to Series" : "Go to Movie", systemImage: "info.circle") {
+            path.append(MetaRef(id: entry.ref.metaId, type: entry.ref.type, name: entry.ref.name,
+                                poster: entry.ref.poster))
+        }
+        Divider()
+        Button("Remove from Continue Watching", systemImage: "xmark.circle", role: .destructive) {
+            withAnimation(.snappy) { watch.remove(entry.ref.videoId) }
+        }
+    }
+
+    private func open(_ item: MetaPreview) {
+        path.append(MetaRef(item))
+    }
+
+    /// Continue Watching resumes with the stream used last time, like Stremio; if there isn't
+    /// one, the stream list opens.
+    private func resume(_ video: VideoRef, startOver: Bool = false) async {
+        guard startingId == nil else { return }
+        startingId = video.videoId
+        defer { startingId = nil }
+        let queue = await EpisodeQueue.queue(after: video, addons: addons)
+        if var item = await QuickPlay.resolve(video: video, queue: queue, addons: addons) {
+            item.startOver = startOver
+            coordinator.play(item)
+        } else {
+            path.append(StreamsRoute(video: video, queue: queue))
+        }
+    }
+
+    /// Opens the stream list for this movie / episode, so another stream can be picked.
+    private func chooseStream(_ video: VideoRef) async {
+        guard startingId == nil else { return }
+        startingId = video.videoId
+        defer { startingId = nil }
+        let queue = await EpisodeQueue.queue(after: video, addons: addons)
+        path.append(StreamsRoute(video: video, queue: queue))
+    }
+}
+
+// MARK: - Sections
+
+struct HomeSectionView: View {
+    let section: HomeSection
+
+    var body: some View {
+        switch section.style {
+        case .ranked:
+            Shelf(title: section.title, spacing: 2) {
+                ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
+                    NavigationLink(value: MetaRef(item)) {
+                        RankedCard(rank: index + 1, item: item)
+                    }
+                    .buttonStyle(CardButtonStyle())
+                }
+            }
+        case .wide:
+            Shelf(title: section.title, seeAll: section.seeAll, spacing: 14) {
+                ForEach(section.items) { item in
+                    NavigationLink(value: MetaRef(item)) {
+                        WideCard(item: item)
+                    }
+                    .buttonStyle(CardButtonStyle())
+                }
+            }
+        case .poster:
+            Shelf(title: section.title, seeAll: section.seeAll) {
+                ForEach(section.items) { item in
+                    NavigationLink(value: MetaRef(item)) {
+                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster)
+                    }
+                    .buttonStyle(CardButtonStyle())
+                }
+            }
+        }
+    }
+}
+
+/// "1 [poster]" — a Top 10 entry with its big outlined number.
+struct RankedCard: View {
+    let rank: Int
+    let item: MetaPreview
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: rank == 10 ? -30 : -18) {
+            RankNumber(rank: rank)
+            RemoteImage(url: item.poster, maxPixel: 600)
+                .frame(width: 112, height: 168)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.08)))
+        }
+        .padding(.trailing, 6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Number \(rank), \(item.name)")
+    }
+}
+
+private struct RankNumber: View {
+    let rank: Int
+
+    var body: some View {
+        let text = Text("\(rank)").font(.system(size: 118, weight: .black, design: .rounded))
+        ZStack {
+            // A thin light outline around a dark figure, the classic Top 10 look.
+            text.foregroundStyle(.white.opacity(0.55)).offset(x: -1.5)
+            text.foregroundStyle(.white.opacity(0.55)).offset(x: 1.5)
+            text.foregroundStyle(.white.opacity(0.55)).offset(y: -1.5)
+            text.foregroundStyle(.white.opacity(0.55)).offset(y: 1.5)
+            text.foregroundStyle(Color(white: 0.06))
+        }
+        .fixedSize()
+        .offset(y: 18)
+        .frame(height: 168, alignment: .bottom)
+        .clipped()
+    }
+}
+
+/// A 16:9 backdrop card with the title's logo, for New Releases and acclaimed rows.
+struct WideCard: View {
+    let item: MetaPreview
+    var width: CGFloat = 280
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ZStack(alignment: .bottomLeading) {
+                RemoteImage(url: item.background ?? item.poster, maxPixel: 900)
+                LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
+                if let logo = item.logo, let url = URL(string: logo) {
+                    LogoImage(url: url, failed: .constant(false))
+                        .frame(maxWidth: width * 0.5, maxHeight: 42, alignment: .bottomLeading)
+                        .padding(12)
+                }
+            }
+            .frame(width: width, height: width * 9 / 16)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.08)))
+
+            Text(item.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text(HomeText.facts(item))
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(1)
+        }
+        .frame(width: width, alignment: .leading)
+    }
+}
+
+enum HomeText {
+    /// "Thriller · Drama · 2025 · ★ 7.4"
+    static func facts(_ item: MetaPreview, genres: Int = 2) -> String {
+        var parts = Array(item.genres.prefix(genres))
+        if let year = item.releaseInfo, !year.isEmpty { parts.append(year) }
+        if let rating = item.imdbRating, !rating.isEmpty { parts.append("★ \(rating)") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Continue Watching tile
+
+struct ContinueTile<Actions: View>: View {
+    let entry: WatchStore.Entry
+    let busy: Bool
+    let onPlay: () -> Void
+    @ViewBuilder let actions: () -> Actions
+
+    private let width: CGFloat = 270
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(action: onPlay) {
+                ZStack(alignment: .bottomLeading) {
+                    LandscapeArtwork(candidates: ArtworkURL.landscapeCandidates(for: entry.ref), maxPixel: 1000)
+                    LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
+                    HStack(alignment: .center, spacing: 10) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .frame(width: 30, height: 30)
+                            .background(.ultraThinMaterial, in: Circle())
+                        ProgressBar(progress: entry.progress)
+                    }
+                    .padding(12)
+                    if busy {
+                        Color.black.opacity(0.35)
+                        ProgressView().controlSize(.large).tint(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(width: width, height: width * 9 / 16)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.08)))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(CardButtonStyle())
+            .contextMenu { actions() }
+
+            HStack(alignment: .top, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.ref.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Menu {
+                    actions()
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("More for \(entry.ref.name)")
+            }
+        }
+        .frame(width: width, alignment: .leading)
+    }
+
+    private var subtitle: String {
+        let left = max(entry.duration - entry.position, 0)
+        let minutes = Int(left / 60)
+        let remaining = minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min left" : "\(minutes) min left"
+        if let label = entry.ref.episodeLabel { return "\(label) · \(remaining)" }
+        return remaining
+    }
+}
+
+private struct ProgressBar: View {
+    let progress: Double
+
+    var body: some View {
+        Capsule()
+            .fill(.white.opacity(0.3))
+            .frame(height: 4)
+            .overlay(alignment: .leading) {
+                GeometryReader { geo in
+                    Capsule().fill(Brand.gradient).frame(width: geo.size.width * max(progress, 0.02))
+                }
+            }
+    }
+}
+
+// MARK: - Hero
+
+struct HeroCarousel: View {
+    let items: [MetaPreview]
+    let onOpen: (MetaPreview) -> Void
+    @State private var current: String?
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(items) { item in
+                        HeroCard(item: item) { onOpen(item) }
+                            .frame(width: width, height: geo.size.height)
+                            .scrollTransition(.interactive, axis: .horizontal) { view, phase in
+                                view.opacity(phase.isIdentity ? 1 : 0.5)
+                                    .scaleEffect(phase.isIdentity ? 1 : 0.96)
+                            }
+                            .id(item.id)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollIndicators(.hidden)
+            .scrollPosition(id: $current)
+            .overlay(alignment: .bottom) {
+                HStack(spacing: 6) {
+                    ForEach(items) { item in
+                        let on = item.id == (current ?? items.first?.id)
+                        Capsule()
+                            .fill(.white.opacity(on ? 0.95 : 0.35))
+                            .frame(width: on ? 18 : 6, height: 6)
+                    }
+                }
+                .animation(.spring(duration: 0.3), value: current)
+                .padding(.bottom, 10)
+            }
+        }
+        .aspectRatio(0.74, contentMode: .fit)
+        // Auto-advance; restarts whenever the page changes, so a swipe resets the timer.
+        .task(id: current) {
+            try? await Task.sleep(nanoseconds: 7_000_000_000)
+            guard !Task.isCancelled, items.count > 1 else { return }
+            let index = items.firstIndex { $0.id == current } ?? 0
+            withAnimation(.easeInOut(duration: 0.7)) { current = items[(index + 1) % items.count].id }
+        }
+    }
+}
+
+struct HeroCard: View {
+    let item: MetaPreview
+    let onOpen: () -> Void
+    @EnvironmentObject private var favorites: FavoritesStore
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            RemoteImage(url: item.background ?? item.poster, maxPixel: 1600, placeholderSymbol: "")
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.45), location: 0),
+                .init(color: .clear, location: 0.18),
+                .init(color: .clear, location: 0.4),
+                .init(color: .black.opacity(0.6), location: 0.66),
+                .init(color: .black, location: 1),
+            ], startPoint: .top, endPoint: .bottom)
+
+            VStack(spacing: 14) {
+                TitleArt(logo: item.logo, name: item.name, maxHeight: 96)
+                    .padding(.horizontal, 48)
+                let facts = HomeText.facts(item, genres: 2)
+                if !facts.isEmpty {
+                    Text(facts)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                HStack(spacing: 12) {
+                    Button(action: onOpen) {
+                        Label("Watch Now", systemImage: "play.fill")
+                            .font(.subheadline.weight(.bold))
+                            .frame(maxWidth: 230)
+                            .padding(.vertical, 13)
+                            .background(.white, in: Capsule())
+                            .foregroundStyle(.black)
+                    }
+                    let inList = favorites.contains(item.id)
+                    Button {
+                        withAnimation(.snappy) { favorites.toggle(MetaRef(item)) }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Image(systemName: inList ? "checkmark" : "plus")
+                            .font(.headline)
+                            .contentTransition(.symbolEffect(.replace))
+                            .frame(width: 46, height: 46)
+                            .glass(Circle(), interactive: true)
+                    }
+                    .accessibilityLabel(inList ? "Remove from My List" : "Add to My List")
+                }
+                .buttonStyle(PressScaleButtonStyle(scale: 0.95))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 32)
+            }
+            .padding(.bottom, 34)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onOpen)
+    }
+}
+
+/// Grey shapes while the very first Home loads (later launches show the saved one instantly).
+private struct HomeSkeleton: View {
+    @State private var pulse = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .aspectRatio(0.74, contentMode: .fit)
+            ForEach(0..<2, id: \.self) { _ in
+                VStack(alignment: .leading, spacing: 10) {
+                    RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.08))
+                        .frame(width: 160, height: 18)
+                    HStack(spacing: 12) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06))
+                                .frame(width: 124, height: 186)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+        }
+        .opacity(pulse ? 0.55 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+        .onAppear { pulse = true }
+        .ignoresSafeArea(edges: .top)
+    }
+}
+
+// MARK: - Genres
+
+struct GenreBrowser: View {
+    private struct Genre: Identifiable {
+        let name: String
+        let symbol: String
+        let colors: [Color]
+        var id: String { name }
+    }
+
+    private let genres: [Genre] = [
+        Genre(name: "Action", symbol: "flame.fill", colors: [Color(red: 0.85, green: 0.2, blue: 0.15), Color(red: 0.95, green: 0.55, blue: 0.1)]),
+        Genre(name: "Comedy", symbol: "face.smiling.inverse", colors: [Color(red: 0.95, green: 0.7, blue: 0.1), Color(red: 0.95, green: 0.45, blue: 0.2)]),
+        Genre(name: "Drama", symbol: "theatermasks.fill", colors: [Color(red: 0.45, green: 0.2, blue: 0.7), Color(red: 0.75, green: 0.3, blue: 0.6)]),
+        Genre(name: "Sci-Fi", symbol: "sparkles", colors: [Color(red: 0.1, green: 0.35, blue: 0.85), Color(red: 0.2, green: 0.8, blue: 0.9)]),
+        Genre(name: "Thriller", symbol: "eye.fill", colors: [Color(red: 0.15, green: 0.3, blue: 0.35), Color(red: 0.2, green: 0.55, blue: 0.5)]),
+        Genre(name: "Crime", symbol: "magnifyingglass", colors: [Color(red: 0.25, green: 0.27, blue: 0.35), Color(red: 0.5, green: 0.5, blue: 0.6)]),
+        Genre(name: "Horror", symbol: "moon.fill", colors: [Color(red: 0.35, green: 0.02, blue: 0.05), Color(red: 0.6, green: 0.1, blue: 0.15)]),
+        Genre(name: "Romance", symbol: "heart.fill", colors: [Color(red: 0.9, green: 0.3, blue: 0.5), Color(red: 0.95, green: 0.55, blue: 0.6)]),
+        Genre(name: "Animation", symbol: "wand.and.stars", colors: [Color(red: 0.1, green: 0.65, blue: 0.5), Color(red: 0.4, green: 0.85, blue: 0.4)]),
+        Genre(name: "Adventure", symbol: "map.fill", colors: [Color(red: 0.6, green: 0.45, blue: 0.2), Color(red: 0.85, green: 0.7, blue: 0.35)]),
+        Genre(name: "Fantasy", symbol: "crown.fill", colors: [Color(red: 0.4, green: 0.25, blue: 0.75), Color(red: 0.85, green: 0.6, blue: 0.95)]),
+        Genre(name: "Mystery", symbol: "questionmark.circle.fill", colors: [Color(red: 0.2, green: 0.2, blue: 0.45), Color(red: 0.35, green: 0.4, blue: 0.7)]),
+        Genre(name: "Family", symbol: "figure.2.and.child.holdinghands", colors: [Color(red: 0.2, green: 0.6, blue: 0.9), Color(red: 0.5, green: 0.85, blue: 0.95)]),
+        Genre(name: "Documentary", symbol: "globe.americas.fill", colors: [Color(red: 0.15, green: 0.45, blue: 0.25), Color(red: 0.4, green: 0.7, blue: 0.4)]),
+        Genre(name: "History", symbol: "building.columns.fill", colors: [Color(red: 0.5, green: 0.35, blue: 0.25), Color(red: 0.75, green: 0.6, blue: 0.45)]),
+        Genre(name: "War", symbol: "shield.fill", colors: [Color(red: 0.3, green: 0.35, blue: 0.2), Color(red: 0.5, green: 0.55, blue: 0.35)]),
+        Genre(name: "Sport", symbol: "sportscourt.fill", colors: [Color(red: 0.1, green: 0.5, blue: 0.3), Color(red: 0.2, green: 0.75, blue: 0.55)]),
+        Genre(name: "Western", symbol: "sun.max.fill", colors: [Color(red: 0.7, green: 0.35, blue: 0.1), Color(red: 0.9, green: 0.65, blue: 0.3)]),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Browse by Genre")
+                .font(.title3.bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 20)
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 10) {
+                    ForEach(genres) { genre in
+                        NavigationLink(value: CatalogRoute(title: genre.name, type: "movie", catalogId: "top",
+                                                           genre: genre.name, allowsTypeSwitch: true)) {
+                            tile(genre)
+                        }
+                        .buttonStyle(CardButtonStyle())
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.horizontal, 20)
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollIndicators(.hidden)
+        }
+    }
+
+    private func tile(_ genre: Genre) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            LinearGradient(colors: genre.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: genre.symbol)
+                .font(.system(size: 44, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.22))
+                .rotationEffect(.degrees(-12))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.top, 6)
+                .padding(.trailing, 4)
+            Text(genre.name)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(12)
+        }
+        .frame(width: 150, height: 86)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+// MARK: - Full catalog page
+
+/// "See All" and genre pages: a poster grid that keeps loading as you scroll.
+struct CatalogGridScreen: View {
+    let route: CatalogRoute
+    @State private var type: String
+    @State private var items: [MetaPreview] = []
+    @State private var loading = false
+    @State private var exhausted = false
+
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+
+    init(route: CatalogRoute) {
+        self.route = route
+        _type = State(initialValue: route.type)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                if route.allowsTypeSwitch {
+                    Picker("Type", selection: $type) {
+                        Text("Movies").tag("movie")
+                        Text("Series").tag("series")
+                    }
+                    .pickerStyle(.segmented)
+                }
+                LazyVGrid(columns: columns, spacing: 18) {
+                    ForEach(items) { item in
+                        NavigationLink(value: MetaRef(item)) {
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: 104)
+                        }
+                        .buttonStyle(CardButtonStyle())
+                        .onAppear {
+                            if item.id == items.last?.id { Task { await loadMore() } }
+                        }
+                    }
+                }
+                if loading {
+                    ProgressView().padding(.vertical, 20)
+                } else if items.isEmpty && exhausted {
+                    ContentUnavailableView("Nothing here", systemImage: "film.stack")
+                        .padding(.top, 60)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 30)
+        }
+        .background(Color.black)
+        .scrollIndicators(.hidden)
+        .navigationTitle(route.title)
+        .navigationBarTitleDisplayMode(.large)
+        .task(id: type) {
+            items = []
+            exhausted = false
+            await loadMore()
+        }
+    }
+
+    private func loadMore() async {
+        guard !loading, !exhausted else { return }
+        loading = true
+        defer { loading = false }
+        let wanted = type
+        let page = await Cinemeta.catalog(type: wanted, id: route.catalogId, genre: route.genre, skip: items.count)
+        guard wanted == type else { return }
+        let known = Set(items.map(\.id))
+        let fresh = page.filter { !known.contains($0.id) && $0.poster != nil }
+        if fresh.isEmpty { exhausted = true }
+        items.append(contentsOf: fresh)
+    }
+}
