@@ -280,6 +280,7 @@ final class WatchStore: ObservableObject {
         let finished = position > duration - max(120, duration * 0.05)
         guard position >= 30 || finished else { return }
         if push { onRecord?(ref, position, duration) }
+        if finished { WatchedStore.shared.markFinished(ref) }
         // One entry per title: a new episode replaces the previous one of the same series.
         var updated = entries.filter { $0.ref.videoId != ref.videoId && $0.ref.metaId != ref.metaId }
         if !finished {

@@ -64,6 +64,9 @@ struct AtmosPlayerApp: App {
                     watch.onRemove = { ref in
                         Task { await account.clearProgress(ref) }
                     }
+                    WatchedStore.shared.onChange = { metaId, type, watched, videoIds in
+                        Task { await account.pushWatched(metaId: metaId, type: type, watched: watched, videoIds: videoIds) }
+                    }
                     await account.sync(addons: addons, watch: watch)
                 }
                 .onChange(of: scenePhase) { _, phase in
@@ -83,8 +86,58 @@ struct RootView: View {
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @State private var tab = PreviewMode.initialTab
+    /// The tabs stop drawing once the player covers them (and start again before it leaves).
+    @State private var homeHidden = false
 
     var body: some View {
+        ZStack {
+            tabs
+                .opacity(homeHidden ? 0 : 1)
+                .allowsHitTesting(coordinator.current == nil)
+            // The player fades in over the app and fades out back to it. It is drawn in the
+            // same window (not a separate full-screen cover), so leaving it never waits on a
+            // presentation animation or a forced rotation.
+            if let item = coordinator.current {
+                player(item)
+                    .transition(.asymmetric(insertion: .opacity,
+                                            removal: .opacity.combined(with: .scale(scale: 0.97))))
+                    .zIndex(1)
+            }
+        }
+        .background(Color.black.ignoresSafeArea())
+        .animation(.easeInOut(duration: 0.32), value: coordinator.current?.id)
+        .onChange(of: coordinator.current?.id) { _, id in
+            if id == nil {
+                homeHidden = false
+            } else {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    if coordinator.current != nil { homeHidden = true }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func player(_ item: PlayItem) -> some View {
+        if let engine = model.engine {
+            PlayerView(item: item, engine: engine)
+                .id(item.id)
+        } else {
+            VStack(spacing: 16) {
+                Text("Player engine unavailable: \(model.engineError ?? "unknown error")")
+                    .multilineTextAlignment(.center)
+                Button("Close") { coordinator.current = nil }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Brand.accent)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.ignoresSafeArea())
+        }
+    }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
             Tab("Home", systemImage: "play.tv.fill", value: 0) {
                 HomeScreen()
@@ -103,27 +156,17 @@ struct RootView: View {
             }
         }
         .task {
+            // CI screenshots only: turn to landscape for the "-landscape" screens.
+            if PreviewMode.screen?.hasSuffix("-landscape") == true {
+                OrientationLock.set(.landscapeRight)
+            }
+        }
+        .task {
             // CI screenshots only: open the player on the Dolby test stream.
             if PreviewMode.screen == "player", let base = Bundle.main.object(forInfoDictionaryKey: "TestMediaBase") as? String,
                !base.isEmpty, let url = URL(string: base + "/dolby-atmos-test.m3u8") {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 coordinator.play(PlayItem(url: url, title: "Dolby Atmos test"))
-            }
-        }
-        .fullScreenCover(item: $coordinator.current) { item in
-            if let engine = model.engine {
-                PlayerView(item: item, engine: engine)
-                    .environmentObject(watch)
-                    .environmentObject(addons)
-            } else {
-                VStack(spacing: 16) {
-                    Text("Player engine unavailable: \(model.engineError ?? "unknown error")")
-                        .multilineTextAlignment(.center)
-                    Button("Close") { coordinator.current = nil }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Brand.accent)
-                }
-                .padding()
             }
         }
         // atmosplayer://play?url=<percent-encoded link>, for handing a link over from another app.

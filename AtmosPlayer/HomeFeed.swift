@@ -189,8 +189,11 @@ final class HomeFeed: ObservableObject {
         }
         top = seeded(Self.topSpecs)
         rest = seeded(Self.restSpecs)
-        hero = Self.heroItems(movies: Cinemeta.cachedCatalog(type: "movie", id: "top") ?? [],
-                              series: Cinemeta.cachedCatalog(type: "series", id: "top") ?? [])
+        let specs = Self.topSpecs
+        hero = Self.heroItems(Self.heroPools { id in
+            guard let spec = specs.first(where: { $0.id == id }) else { return [] }
+            return Cinemeta.cachedCatalog(type: spec.type, id: spec.catalog, genre: spec.genre) ?? []
+        })
     }
 
     var isEmpty: Bool { hero.isEmpty && top.isEmpty && rest.isEmpty }
@@ -222,7 +225,7 @@ final class HomeFeed: ObservableObject {
         }
         failed = false
         lastLoad = Date()
-        let newHero = Self.heroItems(movies: results["top-movies"] ?? [], series: results["top-series"] ?? [])
+        let newHero = Self.heroItems(Self.heroPools { results[$0] ?? [] })
         withAnimation(.easeOut(duration: 0.25)) {
             if newHero.map(\.id) != hero.map(\.id) { hero = newHero }
             if newTop != top { top = newTop }
@@ -265,19 +268,35 @@ final class HomeFeed: ObservableObject {
         return HomeSection(id: spec.id, title: spec.title, style: spec.style, items: list, seeAll: seeAll)
     }
 
-    /// The hero: popular movies and series alternating, only ones with a backdrop and a logo.
-    private static func heroItems(movies: [MetaPreview], series: [MetaPreview]) -> [MetaPreview] {
-        let m = movies.filter { $0.background != nil && $0.logo != nil }.prefix(5)
-        let s = series.filter { $0.background != nil && $0.logo != nil }.prefix(3)
-        var out: [MetaPreview] = []
-        var mi = m.makeIterator(), si = s.makeIterator()
-        while out.count < 8 {
-            let a = mi.next(), b = out.count % 3 == 1 ? si.next() : nil
-            if a == nil && b == nil { break }
-            if let a { out.append(a) }
-            if let b { out.append(b) }
+    /// The hero: ten titles mixed from today's popular and newly released movies and series,
+    /// only ones with a backdrop, a logo and a synopsis. The mix rotates every day, so the
+    /// top of Home doesn't just repeat the Top 10 rows below it.
+    private static func heroItems(_ pools: [[MetaPreview]]) -> [MetaPreview] {
+        let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
+        var seen = Set<String>()
+        var lanes: [[MetaPreview]] = []
+        for (index, pool) in pools.enumerated() {
+            var lane: [MetaPreview] = []
+            for item in pool where item.background != nil && item.logo != nil
+                && !(item.description ?? "").isEmpty && lane.count < 12 {
+                if seen.insert(item.id).inserted { lane.append(item) }
+            }
+            if lane.count > 1 {
+                let shift = (day * (index + 3)) % lane.count
+                lane = Array(lane[shift...] + lane[..<shift])
+            }
+            lanes.append(lane)
         }
-        for rest in s where !out.contains(rest) && out.count < 8 { out.append(rest) }
+        var out: [MetaPreview] = []
+        var round = 0
+        while out.count < 10 && lanes.contains(where: { round < $0.count }) {
+            for lane in lanes where round < lane.count && out.count < 10 { out.append(lane[round]) }
+            round += 1
+        }
         return out
+    }
+
+    private static func heroPools(_ lookup: (String) -> [MetaPreview]) -> [[MetaPreview]] {
+        [lookup("top-movies"), lookup("new-movies"), lookup("top-series"), lookup("new-series")]
     }
 }

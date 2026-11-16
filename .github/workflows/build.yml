@@ -126,6 +126,8 @@ jobs:
           shot detail 20
           shot stremio 8
           shot search 8
+          shot home-landscape 20
+          shot detail-landscape 20
           xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
           xcrun simctl launch "$UDID" com.atmosplayer.app -previewScreen player
           sleep 7

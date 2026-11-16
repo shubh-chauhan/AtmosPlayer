@@ -8,9 +8,9 @@ import EngineBundle
 
 /// Lets the player turn the app to landscape and back, the way Infuse does.
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    /// Browsing stays upright on iPhone, like the Apple TV app; the player turns to landscape.
+    /// Browsing follows the phone (portrait or landscape); the player locks to landscape.
     static let defaultMask: UIInterfaceOrientationMask =
-        UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
+        UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
     static var orientationMask: UIInterfaceOrientationMask = defaultMask
 
     func application(_ application: UIApplication,

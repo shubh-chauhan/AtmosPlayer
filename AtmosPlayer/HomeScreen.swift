@@ -19,14 +19,18 @@ struct HomeScreen: View {
 
     var body: some View {
         NavigationStack(path: $path) {
+            GeometryReader { outer in
+            // Runs edge to edge; rows keep clear of the notch in landscape.
+            let side = max(outer.safeAreaInsets.leading, outer.safeAreaInsets.trailing)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 32) {
+                VStack(alignment: .leading, spacing: 0) {
                     if showsHero {
-                        HeroCarousel(items: feed.hero) { open($0) }
+                        HeroCarousel(items: feed.hero, sideInset: side) { open($0) }
+                            .padding(.bottom, 26)
                     } else if feed.loading {
                         HomeSkeleton()
                     }
-
+                LazyVStack(alignment: .leading, spacing: 32) {
                     continueWatching
 
                     ForEach(feed.top.prefix(2)) { section in
@@ -84,11 +88,16 @@ struct HomeScreen: View {
                         .padding(.top, 80)
                     }
                 }
+                .padding(.horizontal, side)
+                .padding(.top, showsHero ? 0 : 12)
+                }
                 .padding(.bottom, 36)
             }
             .background(Color.black)
             .scrollIndicators(.hidden)
-            .ignoresSafeArea(edges: showsHero ? .top : [])
+            .ignoresSafeArea(edges: showsHero ? [.top, .horizontal] : .horizontal)
+            }
+            .background(Color.black)
             .navigationTitle("Home")
             .toolbar(showsHero ? .hidden : .visible, for: .navigationBar)
             .modifier(BrowseDestinations())
@@ -110,7 +119,7 @@ struct HomeScreen: View {
             }
             .task {
                 // CI screenshots only: open a title page.
-                if PreviewMode.screen == "detail", path.isEmpty {
+                if PreviewMode.screen?.hasPrefix("detail") == true, path.isEmpty {
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     path.append(MetaRef(id: "tt0903747", type: "series", name: "Breaking Bad", poster: nil))
                 }
@@ -397,22 +406,46 @@ private struct ProgressBar: View {
 
 // MARK: - Hero
 
+/// The featured carousel at the top of Home: one title at a time, full bleed, moving on by
+/// itself with a progress line under the current page (like the TV app). Swiping pauses it.
 struct HeroCarousel: View {
     let items: [MetaPreview]
+    /// Room for the notch in landscape (the carousel itself runs edge to edge).
+    var sideInset: CGFloat = 0
     let onOpen: (MetaPreview) -> Void
+    @EnvironmentObject private var coordinator: PlayerCoordinator
+    @Environment(\.verticalSizeClass) private var verticalSize
+    @Environment(\.horizontalSizeClass) private var horizontalSize
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var current: String?
+    @State private var dragging = false
+    /// 0…1: how far the current page's timer has run (drives the indicator).
+    @State private var fill: CGFloat = 0
+    @State private var cycle = 0
+
+    private let interval: Double = 7
+
+    private var wide: Bool { verticalSize == .compact || horizontalSize == .regular }
+    private var activeId: String? { current ?? items.first?.id }
+
+    private struct TimerKey: Equatable {
+        let page: String?
+        let cycle: Int
+        let paused: Bool
+    }
+
+    private var paused: Bool { dragging || coordinator.current != nil || scenePhase != .active }
 
     var body: some View {
         GeometryReader { geo in
-            let width = geo.size.width
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(items) { item in
-                        HeroCard(item: item) { onOpen(item) }
-                            .frame(width: width, height: geo.size.height)
+                        HeroCard(item: item, wide: wide, active: item.id == activeId, sideInset: sideInset) { onOpen(item) }
+                            .frame(width: geo.size.width, height: geo.size.height)
                             .scrollTransition(.interactive, axis: .horizontal) { view, phase in
-                                view.opacity(phase.isIdentity ? 1 : 0.5)
-                                    .scaleEffect(phase.isIdentity ? 1 : 0.96)
+                                view.opacity(phase.isIdentity ? 1 : 0.55)
                             }
                             .id(item.id)
                     }
@@ -422,85 +455,162 @@ struct HeroCarousel: View {
             .scrollTargetBehavior(.paging)
             .scrollIndicators(.hidden)
             .scrollPosition(id: $current)
-            .overlay(alignment: .bottom) {
-                HStack(spacing: 6) {
-                    ForEach(items) { item in
-                        let on = item.id == (current ?? items.first?.id)
-                        Capsule()
-                            .fill(.white.opacity(on ? 0.95 : 0.35))
-                            .frame(width: on ? 18 : 6, height: 6)
-                    }
+            .onScrollPhaseChange { _, phase in
+                let interacting = phase == .interacting || phase == .tracking
+                if dragging != interacting {
+                    dragging = interacting
+                    if !interacting { cycle += 1 }
                 }
-                .animation(.spring(duration: 0.3), value: current)
-                .padding(.bottom, 10)
+            }
+            .overlay(alignment: wide ? .bottomTrailing : .bottom) {
+                indicator
+                    .padding(.bottom, wide ? 22 : 12)
+                    .padding(.trailing, wide ? sideInset + 28 : 0)
             }
         }
-        .aspectRatio(0.74, contentMode: .fit)
-        // Auto-advance; restarts whenever the page changes, so a swipe resets the timer.
-        .task(id: current) {
-            try? await Task.sleep(nanoseconds: 7_000_000_000)
-            guard !Task.isCancelled, items.count > 1 else { return }
-            let index = items.firstIndex { $0.id == current } ?? 0
-            withAnimation(.easeInOut(duration: 0.7)) { current = items[(index + 1) % items.count].id }
+        .modifier(HeroSize(wide: wide, landscape: verticalSize == .compact))
+        // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
+        // playing or in the background.
+        .task(id: TimerKey(page: activeId, cycle: cycle, paused: paused)) {
+            var reset = Transaction()
+            reset.disablesAnimations = true
+            withTransaction(reset) { fill = 0 }
+            guard !paused, items.count > 1 else { return }
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.linear(duration: interval)) { fill = 1 }
+            try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            let index = items.firstIndex { $0.id == activeId } ?? 0
+            withAnimation(.smooth(duration: 0.85)) { current = items[(index + 1) % items.count].id }
+        }
+    }
+
+    private var indicator: some View {
+        HStack(spacing: 6) {
+            ForEach(items) { item in
+                let on = item.id == activeId
+                Capsule()
+                    .fill(.white.opacity(0.3))
+                    .frame(width: on ? 26 : 6, height: 6)
+                    .overlay(alignment: .leading) {
+                        if on {
+                            Capsule().fill(.white).frame(width: max(6, 26 * fill))
+                        }
+                    }
+                    .clipShape(Capsule())
+            }
+        }
+        .animation(.spring(duration: 0.35), value: activeId)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Portrait iPhone: a tall poster-like card. Landscape / iPad: nearly the whole screen.
+private struct HeroSize: ViewModifier {
+    let wide: Bool
+    let landscape: Bool
+
+    func body(content: Content) -> some View {
+        if wide {
+            content.containerRelativeFrame(.vertical) { height, _ in
+                landscape ? height * 0.94 : height * 0.68
+            }
+        } else {
+            content.aspectRatio(0.72, contentMode: .fit)
         }
     }
 }
 
 struct HeroCard: View {
     let item: MetaPreview
+    var wide = false
+    var active = true
+    var sideInset: CGFloat = 0
     let onOpen: () -> Void
     @EnvironmentObject private var favorites: FavoritesStore
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            RemoteImage(url: item.background ?? item.poster, maxPixel: 1600, placeholderSymbol: "")
+        ZStack(alignment: wide ? .bottomLeading : .bottom) {
+            // A slow push-in on the page you're looking at.
+            Color.clear
+                .overlay {
+                    RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
+                        .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
+                        .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
+                }
+                .clipped()
+
             LinearGradient(stops: [
                 .init(color: .black.opacity(0.45), location: 0),
                 .init(color: .clear, location: 0.18),
-                .init(color: .clear, location: 0.4),
-                .init(color: .black.opacity(0.6), location: 0.66),
+                .init(color: .clear, location: wide ? 0.5 : 0.38),
+                .init(color: .black.opacity(0.65), location: wide ? 0.82 : 0.66),
                 .init(color: .black, location: 1),
             ], startPoint: .top, endPoint: .bottom)
-
-            VStack(spacing: 14) {
-                TitleArt(logo: item.logo, name: item.name, maxHeight: 96)
-                    .padding(.horizontal, 48)
-                let facts = HomeText.facts(item, genres: 2)
-                if !facts.isEmpty {
-                    Text(facts)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.75))
-                }
-                HStack(spacing: 12) {
-                    Button(action: onOpen) {
-                        Label("Watch Now", systemImage: "play.fill")
-                            .font(.subheadline.weight(.bold))
-                            .frame(maxWidth: 230)
-                            .padding(.vertical, 13)
-                            .background(.white, in: Capsule())
-                            .foregroundStyle(.black)
-                    }
-                    let inList = favorites.contains(item.id)
-                    Button {
-                        withAnimation(.snappy) { favorites.toggle(MetaRef(item)) }
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    } label: {
-                        Image(systemName: inList ? "checkmark" : "plus")
-                            .font(.headline)
-                            .contentTransition(.symbolEffect(.replace))
-                            .frame(width: 46, height: 46)
-                            .glass(Circle(), interactive: true)
-                    }
-                    .accessibilityLabel(inList ? "Remove from My List" : "Add to My List")
-                }
-                .buttonStyle(PressScaleButtonStyle(scale: 0.95))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 32)
+            if wide {
+                LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0.35), .clear],
+                               startPoint: .leading, endPoint: UnitPoint(x: 0.7, y: 0.5))
             }
-            .padding(.bottom, 34)
+
+            content
+                .padding(.horizontal, wide ? sideInset + 40 : 0)
+                .padding(.bottom, wide ? 48 : 36)
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
+    }
+
+    private var content: some View {
+        VStack(alignment: wide ? .leading : .center, spacing: 12) {
+            TitleArt(logo: item.logo, name: item.name, maxHeight: wide ? 92 : 100)
+                .frame(maxWidth: wide ? 340 : .infinity, maxHeight: wide ? 92 : 100,
+                       alignment: wide ? .leading : .center)
+                .padding(.horizontal, wide ? 0 : 48)
+            let facts = HomeText.facts(item, genres: 2)
+            if !facts.isEmpty {
+                Text(facts)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+            if let description = item.description, !description.isEmpty {
+                Text(description)
+                    .font(wide ? .subheadline : .footnote)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(wide ? 3 : 2)
+                    .multilineTextAlignment(wide ? .leading : .center)
+                    .frame(maxWidth: wide ? 440 : .infinity, alignment: wide ? .leading : .center)
+                    .padding(.horizontal, wide ? 0 : 36)
+            }
+            HStack(spacing: 12) {
+                Button(action: onOpen) {
+                    Label("Watch Now", systemImage: "play.fill")
+                        .font(.subheadline.weight(.bold))
+                        .frame(maxWidth: wide ? 200 : 230)
+                        .padding(.vertical, 13)
+                        .padding(.horizontal, wide ? 22 : 0)
+                        .background(.white, in: Capsule())
+                        .foregroundStyle(.black)
+                }
+                let inList = favorites.contains(item.id)
+                Button {
+                    withAnimation(.snappy) { favorites.toggle(MetaRef(item)) }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    Image(systemName: inList ? "checkmark" : "plus")
+                        .font(.headline)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 46, height: 46)
+                        .glass(Circle(), interactive: true)
+                }
+                .accessibilityLabel(inList ? "Remove from My List" : "Add to My List")
+            }
+            .buttonStyle(PressScaleButtonStyle(scale: 0.95))
+            .foregroundStyle(.white)
+            .padding(.horizontal, wide ? 0 : 32)
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: wide ? .leading : .center)
     }
 }
 

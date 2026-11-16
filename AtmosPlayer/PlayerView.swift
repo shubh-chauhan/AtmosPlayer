@@ -13,7 +13,9 @@ struct PlayerView: View {
     @StateObject private var status = PlayerStatus()
     @EnvironmentObject private var watch: WatchStore
     @EnvironmentObject private var addons: AddonStore
-    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var coordinator: PlayerCoordinator
+    /// Set while the player fades out, so a second tap can't close twice.
+    @State private var closing = false
     @Environment(\.scenePhase) private var scenePhase
 
     /// The item playing now. Starts as the one we were opened with; "Next episode" replaces it.
@@ -154,8 +156,9 @@ struct PlayerView: View {
                                       title: item.watch?.name ?? item.displayTitle,
                                       subtitle: item.watch?.episodeLabel,
                                       artwork: item.watch?.background ?? item.poster,
+                                      logo: ArtworkURL.logo(forMetaId: item.watch?.metaId),
                                       isTorrent: item.stream?.isTorrent == true,
-                                      onClose: { dismiss() })
+                                      onClose: { close() })
                         .transition(.opacity)
                 }
 
@@ -385,7 +388,7 @@ struct PlayerView: View {
 
     private var topBar: some View {
         HStack(spacing: 12) {
-            GlassIconButton(symbol: "xmark") { dismiss() }
+            GlassIconButton(symbol: "xmark") { close() }
             if pip.isPossible {
                 GlassIconButton(symbol: pip.isActive ? "pip.exit" : "pip.enter") { pip.toggle(); interacted() }
             }
@@ -690,6 +693,17 @@ struct PlayerView: View {
 
     // MARK: Actions
 
+    /// Leaves the player: sound stops at once, the picture fades back to the app, and the
+    /// heavier teardown (saving, stopping the engine) runs as the player goes away.
+    private func close() {
+        guard !closing else { return }
+        closing = true
+        hideTask?.cancel()
+        countdownTask?.cancel()
+        if engine.state == .playing { engine.togglePlayPause() }
+        coordinator.current = nil
+    }
+
     private func skip(_ delta: Double, flash: Bool) {
         var target = max(engine.clock.currentTime + delta, 0)
         if engine.duration > 0 { target = min(target, max(engine.duration - 1, 0)) }
@@ -750,7 +764,7 @@ struct PlayerView: View {
                         .foregroundStyle(.black)
                 }
                 Button {
-                    dismiss()
+                    close()
                 } label: {
                     Text("Close")
                         .font(.subheadline.weight(.semibold))

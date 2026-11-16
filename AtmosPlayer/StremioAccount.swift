@@ -100,6 +100,11 @@ final class StremioAccount: ObservableObject {
             library = saved
             if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: libraryKey) }
             watch.mergeFromStremio(items.map(\.watchSnapshot))
+            // Watched movies and episodes (the ✓ marks).
+            for item in items where item.type == "movie" || item.type == "series" {
+                WatchedStore.shared.adoptRemote(metaId: item.id, type: item.type, field: item.watchedField,
+                                                movieWatched: item.movieWatched, modified: item.modified)
+            }
 
             lastSync = Date()
             lastError = nil
@@ -113,10 +118,71 @@ final class StremioAccount: ObservableObject {
 
     // MARK: Push to Stremio
 
+    /// Account writes run one after another, so two changes to the same library item
+    /// (progress and a ✓, say) can't overwrite each other.
+    private var writeChain: Task<Void, Never>?
+
+    private func serialized(_ work: @escaping @MainActor () async -> Void) async {
+        let previous = writeChain
+        let task = Task { @MainActor in
+            await previous?.value
+            await work()
+        }
+        writeChain = task
+        await task.value
+    }
+
+    /// Sends a title's watched movies / episodes to Stremio (what its "Mark as watched" does).
+    /// `videoIds` is the series' episode list in the addon's order; fetched from Cinemeta if nil.
+    func pushWatched(metaId: String, type: String, watched: Set<String>, videoIds: [String]?) async {
+        guard let key = authKey else { return }
+        await serialized {
+            do {
+                let existing = try await StremioAPI.call("datastoreGet",
+                                                         ["authKey": key, "collection": "libraryItem", "ids": [metaId], "all": false])
+                var item = (existing as? [Any])?.first as? [String: Any]
+                var ids = videoIds
+                if item == nil || (type == "series" && ids == nil) {
+                    let meta = await Cinemeta.meta(type: type, id: metaId)
+                    if ids == nil { ids = meta?.videos.map(\.id) }
+                    if item == nil {
+                        let now = StremioAPI.timestamp(Date())
+                        item = [
+                            "_id": metaId, "name": meta?.name ?? "", "type": type, "poster": meta?.poster ?? "",
+                            "posterShape": "poster", "removed": true, "temp": true, "_ctime": now,
+                            "behaviorHints": ["defaultVideoId": NSNull(), "featuredVideoId": NSNull(), "hasScheduledVideos": false],
+                        ]
+                    }
+                }
+                guard var item else { return }
+                var state = (item["state"] as? [String: Any]) ?? [
+                    "timeWatched": 0, "overallTimeWatched": 0, "timesWatched": 0, "flaggedWatched": 0,
+                    "watched": "", "noNotif": false, "timeOffset": 0, "duration": 0,
+                ]
+                if type == "series" {
+                    guard let ids, let field = WatchedBitfield.encode(watched, videoIds: ids) else { return }
+                    state["watched"] = field
+                } else {
+                    let on = watched.contains(metaId)
+                    state["flaggedWatched"] = on ? 1 : 0
+                    let times = (state["timesWatched"] as? NSNumber)?.intValue ?? 0
+                    state["timesWatched"] = on ? max(times, 1) : 0
+                    if on { state["timeOffset"] = 0 }
+                }
+                item["state"] = state
+                item["_mtime"] = StremioAPI.timestamp(Date())
+                _ = try await StremioAPI.call("datastorePut",
+                                              ["authKey": key, "collection": "libraryItem", "changes": [item]])
+            } catch {
+                LogStore.shared.append("Stremio watched sync failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Takes a title off Stremio's Continue Watching (what Stremio's own "dismiss" does).
     func clearProgress(_ ref: VideoRef) async {
         guard let key = authKey else { return }
-        do {
+        await serialized { do {
             let existing = try await StremioAPI.call("datastoreGet",
                                                      ["authKey": key, "collection": "libraryItem", "ids": [ref.metaId], "all": false])
             guard var item = (existing as? [Any])?.first as? [String: Any],
@@ -128,15 +194,15 @@ final class StremioAccount: ObservableObject {
                                           ["authKey": key, "collection": "libraryItem", "changes": [item]])
         } catch {
             LogStore.shared.append("Stremio dismiss failed: \(error.localizedDescription)")
-        }
+        } }
     }
 
     /// Called when the player closes, so Stremio's Continue Watching matches where you stopped.
     func pushProgress(_ ref: VideoRef, position: Double, duration: Double) async {
         guard pushProgressEnabled, let key = authKey, position.isFinite, duration.isFinite, position >= 30 else { return }
         let finished = duration > 0 && position > duration - max(120, duration * 0.05)
-        let now = StremioAPI.timestamp(Date())
-        do {
+        await serialized { do {
+            let now = StremioAPI.timestamp(Date())
             // Start from the latest copy on the server so nothing else in the item is lost.
             let existing = try await StremioAPI.call("datastoreGet",
                                                      ["authKey": key, "collection": "libraryItem", "ids": [ref.metaId], "all": false])
@@ -169,7 +235,7 @@ final class StremioAccount: ObservableObject {
                                           ["authKey": key, "collection": "libraryItem", "changes": [item]])
         } catch {
             LogStore.shared.append("Stremio progress sync failed: \(error.localizedDescription)")
-        }
+        } }
     }
 }
 
@@ -186,6 +252,8 @@ private struct LibraryItem {
     let videoId: String?
     let offset: Double
     let duration: Double
+    let watchedField: String?
+    let movieWatched: Bool
 
     init?(_ json: [String: Any]) {
         guard let id = json["_id"] as? String, let type = json["type"] as? String else { return nil }
@@ -203,6 +271,9 @@ private struct LibraryItem {
         videoId = (video?.isEmpty ?? true) ? nil : video
         offset = ((state["timeOffset"] as? NSNumber)?.doubleValue ?? 0) / 1000
         duration = ((state["duration"] as? NSNumber)?.doubleValue ?? 0) / 1000
+        watchedField = state["watched"] as? String
+        movieWatched = ((state["flaggedWatched"] as? NSNumber)?.intValue ?? 0) > 0
+            || ((state["timesWatched"] as? NSNumber)?.intValue ?? 0) > 0
     }
 
     /// Stremio's own rule for Continue Watching.

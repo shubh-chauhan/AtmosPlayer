@@ -96,10 +96,12 @@ struct PlayerStartupView: View {
     let title: String
     let subtitle: String?
     let artwork: String?
+    var logo: String? = nil
     let isTorrent: Bool
     let onClose: () -> Void
 
     @State private var pulse = false
+    @State private var drift = false
 
     private var stageText: String {
         guard let stage = engine.startupProgress?.stage else {
@@ -119,42 +121,52 @@ struct PlayerStartupView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let artwork {
+                // The backdrop, softly blurred and slowly drifting.
                 Color.clear
-                    .overlay { RemoteImage(url: artwork, maxPixel: 1200, placeholderSymbol: "") }
+                    .overlay {
+                        RemoteImage(url: artwork, maxPixel: 1200, placeholderSymbol: "")
+                            .scaleEffect(drift ? 1.12 : 1.02)
+                            .animation(.linear(duration: 20), value: drift)
+                    }
                     .clipped()
-                    .blur(radius: 24)
-                    .opacity(0.45)
+                    .blur(radius: 18)
+                    .opacity(0.5)
                     .ignoresSafeArea()
             }
-            LinearGradient(colors: [.black.opacity(0.2), .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [.black.opacity(0.15), .black.opacity(0.85)],
+                           center: .center, startRadius: 40, endRadius: 520)
                 .ignoresSafeArea()
 
-            VStack(spacing: 18) {
-                VStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 30, weight: .bold))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(.headline)
-                            .foregroundStyle(.white.opacity(0.7))
-                            .lineLimit(1)
-                    }
+            // Like Stremio: the title's logo, breathing, while the stream opens.
+            VStack(spacing: 22) {
+                TitleArt(logo: logo, name: title, maxHeight: 120)
+                    .frame(maxWidth: 420, maxHeight: 120)
+                    .shadow(color: .black.opacity(0.5), radius: 16)
+                    .scaleEffect(pulse ? 1 : 0.95)
+                    .opacity(pulse ? 1 : 0.55)
+                    .animation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true), value: pulse)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .lineLimit(1)
                 }
-                .opacity(pulse ? 1 : 0.55)
-                .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulse)
 
-                VStack(spacing: 10) {
-                    ProgressView(value: engine.startupProgress?.fraction ?? 0.04)
-                        .progressViewStyle(.linear)
-                        .tint(.white)
-                        .frame(width: 220)
-                        .animation(.easeOut(duration: 0.3), value: engine.startupProgress?.fraction)
+                VStack(spacing: 9) {
+                    Capsule()
+                        .fill(.white.opacity(0.18))
+                        .frame(width: 180, height: 3)
+                        .overlay(alignment: .leading) {
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: 180 * max(engine.startupProgress?.fraction ?? 0.04, 0.04), height: 3)
+                                .animation(.easeOut(duration: 0.35), value: engine.startupProgress?.fraction)
+                        }
                     Text(stageText)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.6))
                         .contentTransition(.opacity)
+                        .animation(.easeInOut(duration: 0.2), value: stageText)
                     if isTorrent, let stats = torrent.stats {
                         HStack(spacing: 14) {
                             Label("\(stats.peers) peers", systemImage: "person.2.fill")
@@ -163,11 +175,12 @@ struct PlayerStartupView: View {
                                 Label("\(Int(stats.streamProgress * 100))%", systemImage: "square.stack.3d.down.forward.fill")
                             }
                         }
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.7))
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.55))
                         .transition(.opacity)
                     }
                 }
+                .padding(.top, 6)
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 40)
@@ -189,7 +202,10 @@ struct PlayerStartupView: View {
             .padding(.horizontal, 24)
             .padding(.top, 14)
         }
-        .onAppear { pulse = true }
+        .onAppear {
+            pulse = true
+            drift = true
+        }
     }
 }
 

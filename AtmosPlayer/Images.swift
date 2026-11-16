@@ -77,6 +77,12 @@ actor ImagePipeline {
 /// poster (300×450), which looks soft at three pixels per point; the same image exists at
 /// 500×750 ("medium") and 780×1170 ("large").
 enum ArtworkURL {
+    /// The title's logo from MetaHub (what Cinemeta itself lists), for IMDb ids.
+    static func logo(forMetaId id: String?) -> String? {
+        guard let id, id.hasPrefix("tt") else { return nil }
+        return "https://images.metahub.space/logo/medium/\(id)/img"
+    }
+
     static func best(_ raw: String?, maxPixel: Int) -> URL? {
         guard var text = raw, !text.isEmpty else { return nil }
         if text.contains("images.metahub.space/poster/") {

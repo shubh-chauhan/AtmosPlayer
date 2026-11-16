@@ -259,6 +259,19 @@ struct StremioMeta: Decodable {
     let writers: [String]
     let awards: String?
     let country: String?
+    /// "Ended", "Continuing" (series, Cinemeta).
+    let status: String?
+    /// ISO date of the (first) release.
+    let released: String?
+    /// YouTube id of the trailer, when the addon lists one.
+    let trailerId: String?
+    /// Stremio's share link (strem.io/s/…).
+    let shareURL: String?
+    let language: String?
+
+    private struct TrailerStream: Decodable { let ytId: String? }
+    private struct Trailer: Decodable { let source: String?; let type: String? }
+    private struct Link: Decodable { let category: String?; let url: String? }
 
     struct Video: Decodable, Identifiable, Hashable {
         let id: String
@@ -268,6 +281,13 @@ struct StremioMeta: Decodable {
         let released: String?
         let thumbnail: String?
         let overview: String?
+        /// Episode rating out of 10 (Cinemeta).
+        let rating: String?
+
+        /// The air date, parsed.
+        var releaseDate: Date? { StremioMeta.parseDate(released) }
+        /// Not out yet.
+        var upcoming: Bool { (releaseDate ?? .distantPast) > Date() }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: AnyKey.self)
@@ -281,6 +301,8 @@ struct StremioMeta: Decodable {
             released = c.lossyString(AnyKey("released"))
             thumbnail = c.lossyString(AnyKey("thumbnail"))
             overview = c.lossyString(AnyKey("overview")) ?? c.lossyString(AnyKey("description"))
+            let rawRating = c.lossyString(AnyKey("rating"))
+            rating = (rawRating == nil || rawRating == "0" || rawRating == "0.0") ? nil : rawRating
         }
 
         /// "S1E2", or nil when the addon gives no numbers.
@@ -312,7 +334,27 @@ struct StremioMeta: Decodable {
         writers = c.stringArray(AnyKey("writer")) ?? []
         awards = c.lossyString(AnyKey("awards"))
         country = c.lossyString(AnyKey("country"))
+        status = c.lossyString(AnyKey("status"))
+        released = c.lossyString(AnyKey("released"))
+        language = c.lossyString(AnyKey("language"))
+        trailerId = c.lossyArray(TrailerStream.self, AnyKey("trailerStreams")).compactMap(\.ytId).first
+            ?? c.lossyArray(Trailer.self, AnyKey("trailers")).first(where: { $0.type == nil || $0.type == "Trailer" })?.source
+        shareURL = c.lossyArray(Link.self, AnyKey("links")).first(where: { $0.category == "share" })?.url
     }
+
+    private static let isoFull: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let isoPlain = ISO8601DateFormatter()
+
+    static func parseDate(_ text: String?) -> Date? {
+        guard let text, !text.isEmpty else { return nil }
+        return isoFull.date(from: text) ?? isoPlain.date(from: text)
+    }
+
+    var releaseDate: Date? { Self.parseDate(released) }
 }
 
 struct StremioStream: Decodable, Identifiable {
