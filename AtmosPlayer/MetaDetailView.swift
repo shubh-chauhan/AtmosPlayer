@@ -35,6 +35,8 @@ struct MetaDetailView: View {
 
     /// Landscape iPhone or iPad: the title block sits on the left over the backdrop.
     private var wide: Bool { verticalSize == .compact || horizontalSize == .regular }
+    /// Landscape iPhone: little height, so the title block is compact.
+    private var short: Bool { verticalSize == .compact }
 
     // MARK: Derived data
 
@@ -221,8 +223,8 @@ struct MetaDetailView: View {
 
     private var heroContent: some View {
         VStack(alignment: wide ? .leading : .center, spacing: 14) {
-            TitleArt(logo: logo, name: name, maxHeight: wide ? 104 : 100)
-                .frame(maxWidth: wide ? 380 : .infinity, maxHeight: wide ? 104 : 100,
+            TitleArt(logo: logo, name: name, maxHeight: short ? 64 : wide ? 104 : 100)
+                .frame(maxWidth: wide ? 340 : .infinity, maxHeight: short ? 64 : wide ? 104 : 100,
                        alignment: wide ? .leading : .center)
                 .padding(.horizontal, wide ? 0 : 36)
             factsLine
@@ -230,11 +232,11 @@ struct MetaDetailView: View {
                 Text(description)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(3)
+                    .lineLimit(short ? 2 : 3)
                     .frame(maxWidth: 480, alignment: .leading)
             }
             actionButtons
-                .frame(maxWidth: wide ? 440 : .infinity)
+                .frame(maxWidth: wide ? (short ? 560 : 440) : .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: wide ? .leading : .center)
     }
@@ -288,7 +290,10 @@ struct MetaDetailView: View {
     }
 
     private var actionButtons: some View {
-        VStack(alignment: wide ? .leading : .center, spacing: 16) {
+        // Landscape iPhone: Play and the actions share one row.
+        let layout = short ? AnyLayout(HStackLayout(alignment: .center, spacing: 22))
+                           : AnyLayout(VStackLayout(alignment: wide ? .leading : .center, spacing: 16))
+        return layout {
             if let primary {
                 VStack(spacing: 7) {
                     Button {
@@ -303,8 +308,8 @@ struct MetaDetailView: View {
                             Text(starting ? "Starting…" : primary.label)
                         }
                         .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
+                        .frame(maxWidth: short ? 220 : .infinity)
+                        .frame(height: short ? 46 : 50)
                         .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .foregroundStyle(.black)
                     }
@@ -313,7 +318,7 @@ struct MetaDetailView: View {
                     .contextMenu {
                         Button("Choose Stream…", systemImage: "list.bullet") { streamsRoute = primaryRoute(primary.video) }
                     }
-                    if let note = primary.note, !note.isEmpty {
+                    if let note = primary.note, !note.isEmpty, !short {
                         Text(note)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.white.opacity(0.6))

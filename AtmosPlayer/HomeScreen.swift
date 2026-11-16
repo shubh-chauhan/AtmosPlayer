@@ -439,6 +439,7 @@ struct HeroCarousel: View {
 
     var body: some View {
         GeometryReader { geo in
+            ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(items) { item in
@@ -455,6 +456,14 @@ struct HeroCarousel: View {
             .scrollTargetBehavior(.paging)
             .scrollIndicators(.hidden)
             .scrollPosition(id: $current)
+            // Pages are exactly the screen's width: no extra inset for the notch, which would
+            // shift every page sideways in landscape.
+            .contentMargins(.horizontal, 0, for: .scrollContent)
+            .ignoresSafeArea(edges: .horizontal)
+            // After a rotation, land back on the same page.
+            .onChange(of: geo.size.width) { _, _ in
+                if let id = activeId { proxy.scrollTo(id, anchor: .leading) }
+            }
             .onScrollPhaseChange { _, phase in
                 let interacting = phase == .interacting || phase == .tracking
                 if dragging != interacting {
@@ -466,6 +475,7 @@ struct HeroCarousel: View {
                 indicator
                     .padding(.bottom, wide ? 22 : 12)
                     .padding(.trailing, wide ? sideInset + 28 : 0)
+            }
             }
         }
         .modifier(HeroSize(wide: wide, landscape: verticalSize == .compact))
@@ -529,6 +539,9 @@ struct HeroCard: View {
     var sideInset: CGFloat = 0
     let onOpen: () -> Void
     @EnvironmentObject private var favorites: FavoritesStore
+    @Environment(\.verticalSizeClass) private var verticalSize
+    /// Landscape iPhone: little height, so a smaller logo and shorter synopsis.
+    private var short: Bool { verticalSize == .compact }
 
     var body: some View {
         ZStack(alignment: wide ? .bottomLeading : .bottom) {
@@ -555,7 +568,7 @@ struct HeroCard: View {
 
             content
                 .padding(.horizontal, wide ? sideInset + 40 : 0)
-                .padding(.bottom, wide ? 48 : 36)
+                .padding(.bottom, short ? 40 : wide ? 48 : 36)
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
@@ -563,8 +576,8 @@ struct HeroCard: View {
 
     private var content: some View {
         VStack(alignment: wide ? .leading : .center, spacing: 12) {
-            TitleArt(logo: item.logo, name: item.name, maxHeight: wide ? 92 : 100)
-                .frame(maxWidth: wide ? 340 : .infinity, maxHeight: wide ? 92 : 100,
+            TitleArt(logo: item.logo, name: item.name, maxHeight: short ? 68 : wide ? 92 : 100)
+                .frame(maxWidth: wide ? 320 : .infinity, maxHeight: short ? 68 : wide ? 92 : 100,
                        alignment: wide ? .leading : .center)
                 .padding(.horizontal, wide ? 0 : 48)
             let facts = HomeText.facts(item, genres: 2)
@@ -577,7 +590,7 @@ struct HeroCard: View {
                 Text(description)
                     .font(wide ? .subheadline : .footnote)
                     .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(wide ? 3 : 2)
+                    .lineLimit(wide && !short ? 3 : 2)
                     .multilineTextAlignment(wide ? .leading : .center)
                     .frame(maxWidth: wide ? 440 : .infinity, alignment: wide ? .leading : .center)
                     .padding(.horizontal, wide ? 0 : 36)
