@@ -242,7 +242,7 @@ struct RankedCard: View {
         HStack(alignment: .bottom, spacing: rank == 10 ? -30 : -18) {
             RankNumber(rank: rank)
             RemoteImage(url: item.poster, maxPixel: 600)
-                .frame(width: 112, height: 168)
+                .frame(width: Device.size(112), height: Device.size(168))
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.08)))
         }
@@ -275,7 +275,7 @@ private struct RankNumber: View {
 /// A 16:9 backdrop card with the title's logo, for New Releases and acclaimed rows.
 struct WideCard: View {
     let item: MetaPreview
-    var width: CGFloat = 280
+    var width: CGFloat = Device.size(280)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -323,7 +323,7 @@ struct ContinueTile<Actions: View>: View {
     let onPlay: () -> Void
     @ViewBuilder let actions: () -> Actions
 
-    private let width: CGFloat = 270
+    private let width: CGFloat = Device.size(270)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -479,6 +479,10 @@ struct HeroCarousel: View {
             }
         }
         .modifier(HeroSize(wide: wide, landscape: verticalSize == .compact))
+        // A page that was removed (its artwork never loaded) hands over to the first one.
+        .onChange(of: items.map(\.id)) { _, ids in
+            if let current, !ids.contains(current) { self.current = nil }
+        }
         // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
         // playing or in the background.
         .task(id: TimerKey(page: activeId, cycle: cycle, paused: paused)) {
@@ -643,11 +647,11 @@ private struct HomeSkeleton: View {
                     HStack(spacing: 12) {
                         ForEach(0..<4, id: \.self) { _ in
                             RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06))
-                                .frame(width: 124, height: 186)
+                                .frame(width: Device.size(124), height: Device.size(186))
                         }
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, Device.margin)
             }
         }
         .opacity(pulse ? 0.55 : 1)
@@ -693,7 +697,7 @@ struct GenreBrowser: View {
             Text("Browse by Genre")
                 .font(.title3.bold())
                 .foregroundStyle(.white)
-                .padding(.horizontal, 20)
+                .padding(.horizontal, Device.margin)
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 10) {
                     ForEach(genres) { genre in
@@ -705,7 +709,7 @@ struct GenreBrowser: View {
                     }
                 }
                 .scrollTargetLayout()
-                .padding(.horizontal, 20)
+                .padding(.horizontal, Device.margin)
             }
             .scrollTargetBehavior(.viewAligned)
             .scrollIndicators(.hidden)
@@ -742,7 +746,7 @@ struct CatalogGridScreen: View {
     @State private var loading = false
     @State private var exhausted = false
 
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: Device.size(104)), spacing: Device.isPad ? 18 : 12)]
 
     init(route: CatalogRoute) {
         self.route = route
@@ -762,7 +766,7 @@ struct CatalogGridScreen: View {
                 LazyVGrid(columns: columns, spacing: 18) {
                     ForEach(items) { item in
                         NavigationLink(value: MetaRef(item)) {
-                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: 104)
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
                         }
                         .buttonStyle(CardButtonStyle())
                         .onAppear {
@@ -777,7 +781,7 @@ struct CatalogGridScreen: View {
                         .padding(.top, 60)
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
             .padding(.bottom, 30)
         }
         .background(Color.black)

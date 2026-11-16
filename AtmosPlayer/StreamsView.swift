@@ -137,6 +137,7 @@ struct StreamsView: View {
                 }
             }
         }
+        .readableWidth()
         .scrollContentBackground(.hidden)
         .background(Color.black)
         .navigationTitle("Choose a Stream")

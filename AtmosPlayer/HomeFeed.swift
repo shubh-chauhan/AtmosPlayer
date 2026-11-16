@@ -194,6 +194,35 @@ final class HomeFeed: ObservableObject {
             guard let spec = specs.first(where: { $0.id == id }) else { return [] }
             return Cinemeta.cachedCatalog(type: spec.type, id: spec.catalog, genre: spec.genre) ?? []
         })
+        Task { await self.pruneHero() }
+    }
+
+    /// Titles whose backdrop would not load. They are left out of the hero, where they would
+    /// show as an empty black page.
+    private var artless: Set<String> = []
+
+    private func pruneHero() async {
+        let items = hero
+        guard items.count > 3 else { return }
+        var failed: Set<String> = []
+        await withTaskGroup(of: (String, Bool).self) { group in
+            for item in items {
+                let id = item.id
+                guard let url = ArtworkURL.best(item.background ?? item.poster, maxPixel: 320) else {
+                    failed.insert(id)
+                    continue
+                }
+                group.addTask { (id, await ImagePipeline.shared.image(url, maxPixel: 320) != nil) }
+            }
+            for await (id, loaded) in group where !loaded { failed.insert(id) }
+        }
+        // Most of them failing means the network is down, not that the artwork is missing.
+        guard !failed.isEmpty, failed.count * 2 < items.count else { return }
+        artless.formUnion(failed)
+        let kept = hero.filter { !artless.contains($0.id) }
+        if kept.count != hero.count {
+            withAnimation(.easeOut(duration: 0.25)) { hero = kept }
+        }
     }
 
     var isEmpty: Bool { hero.isEmpty && top.isEmpty && rest.isEmpty }
@@ -225,12 +254,13 @@ final class HomeFeed: ObservableObject {
         }
         failed = false
         lastLoad = Date()
-        let newHero = Self.heroItems(Self.heroPools { results[$0] ?? [] })
+        let newHero = Self.heroItems(Self.heroPools { results[$0] ?? [] }).filter { !artless.contains($0.id) }
         withAnimation(.easeOut(duration: 0.25)) {
             if newHero.map(\.id) != hero.map(\.id) { hero = newHero }
             if newTop != top { top = newTop }
             if newRest != rest { rest = newRest }
         }
+        await pruneHero()
     }
 
     /// "Because You Watched …": popular titles sharing the main genre of the last thing watched.

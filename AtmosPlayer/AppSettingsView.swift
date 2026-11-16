@@ -204,8 +204,9 @@ struct AppSettingsView: View {
                     LabeledContent("Player engine", value: "AetherEngine")
                 }
             }
+            .readableWidth()
             .navigationTitle("Settings")
-            .confirmationDialog("Clear Continue Watching on this iPhone?", isPresented: $confirmClearWatch,
+            .confirmationDialog("Clear Continue Watching on this \(Device.isPad ? "iPad" : "iPhone")?", isPresented: $confirmClearWatch,
                                 titleVisibility: .visible) {
                 Button("Clear", role: .destructive) { watch.clearAll() }
             } message: {

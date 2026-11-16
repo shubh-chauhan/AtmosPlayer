@@ -385,7 +385,7 @@ struct MetaDetailView: View {
                         .foregroundStyle(.white)
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
             .contentShape(Rectangle())
             .onTapGesture { withAnimation(.easeInOut) { expandedDescription.toggle() } }
         }
@@ -425,7 +425,7 @@ struct MetaDetailView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, Device.margin)
             }
             .scrollIndicators(.hidden)
         }
@@ -457,7 +457,7 @@ struct MetaDetailView: View {
                 }
             }
             .scrollTargetLayout()
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
         }
         .scrollTargetBehavior(.viewAligned)
         .scrollIndicators(.hidden)
@@ -519,7 +519,7 @@ struct MetaDetailView: View {
                     }
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
         }
     }
 
@@ -668,7 +668,7 @@ struct EpisodeCard: View {
     let video: StremioMeta.Video
     let progress: Double?
     var watched: Bool = false
-    private let width: CGFloat = 280
+    private let width: CGFloat = Device.size(280)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

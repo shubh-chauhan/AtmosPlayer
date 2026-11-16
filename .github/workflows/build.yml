@@ -138,6 +138,36 @@ jobs:
           xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
           sleep 4
           xcrun simctl io "$UDID" screenshot shots/springboard.png
+          xcrun simctl shutdown "$UDID" || true
+          # The same screens on an iPad.
+          PAD=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = [d for runtime, ds in json.load(sys.stdin)["devices"].items() if "iOS" in runtime for d in ds]
+          pads = [d for d in devices if d["name"].startswith("iPad")]
+          pick = next((d for d in pads if "Pro" in d["name"] and "11" in d["name"]), pads[0] if pads else None)
+          print(pick["udid"] if pick else "")')
+          if [ -n "$PAD" ]; then
+            echo "iPad simulator: $PAD"
+            xcrun simctl boot "$PAD"
+            xcrun simctl bootstatus "$PAD" -b
+            xcrun simctl ui "$PAD" appearance dark
+            xcrun simctl install "$PAD" build/Build/Products/Debug-iphonesimulator/AtmosPlayer.app
+            padshot() {
+              screen=$1; wait=$2
+              xcrun simctl terminate "$PAD" com.atmosplayer.app 2>/dev/null || true
+              xcrun simctl launch "$PAD" com.atmosplayer.app -previewScreen "$screen"
+              sleep "$wait"
+              xcrun simctl io "$PAD" screenshot "shots/ipad-$screen.png"
+            }
+            padshot home 22
+            padshot detail 22
+            padshot stremio 8
+            padshot search 8
+            padshot home-landscape 22
+            padshot detail-landscape 22
+            padshot player 12
+            xcrun simctl terminate "$PAD" com.atmosplayer.app 2>/dev/null || true
+          fi
           ls -l shots
 
       - uses: actions/upload-artifact@v4

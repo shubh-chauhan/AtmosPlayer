@@ -79,6 +79,7 @@ struct HomeView: View {
                     }
                 }
             }
+            .readableWidth()
             .navigationTitle("Links")
             .scrollDismissesKeyboard(.immediately)
             .keyboardDoneButton()

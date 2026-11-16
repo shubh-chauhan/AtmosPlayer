@@ -50,7 +50,7 @@ struct RatingsRow: View {
                     }
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
         }
         .scrollIndicators(.hidden)
     }
@@ -171,7 +171,7 @@ struct PersonScreen: View {
     @State private var series: [MetaPreview] = []
     @State private var loading = true
 
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: Device.size(104)), spacing: Device.isPad ? 18 : 12)]
 
     var body: some View {
         ScrollView {
@@ -194,7 +194,7 @@ struct PersonScreen: View {
                     ContentUnavailableView("No titles found", systemImage: "person.crop.circle.badge.questionmark")
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
             .padding(.bottom, 30)
         }
         .background(Color.black)
@@ -220,7 +220,7 @@ struct PersonScreen: View {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(items) { item in
                         NavigationLink(value: MetaRef(item)) {
-                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: 104)
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
                         }
                         .buttonStyle(CardButtonStyle())
                     }

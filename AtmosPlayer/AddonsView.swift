@@ -78,6 +78,7 @@ struct AddonsView: View {
                     }
                 }
             }
+            .readableWidth()
             .navigationTitle("Stremio")
             .toolbar { EditButton() }
             .scrollDismissesKeyboard(.immediately)

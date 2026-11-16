@@ -139,13 +139,13 @@ struct Shelf<Content: View>: View {
             .font(.title3.bold())
             .foregroundStyle(.white)
             .lineLimit(1)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: spacing) {
                     content()
                 }
                 .scrollTargetLayout()
-                .padding(.horizontal, 20)
+                .padding(.horizontal, Device.margin)
             }
             .scrollTargetBehavior(.viewAligned)
             .scrollIndicators(.hidden)
@@ -167,7 +167,7 @@ struct PosterCard: View {
     let title: String
     let subtitle: String?
     let poster: String?
-    var width: CGFloat = 124
+    var width: CGFloat = Device.size(124)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -200,7 +200,7 @@ struct SearchScreen: View {
     @State private var results: [CatalogRow] = []
     @State private var pending = 0
 
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: Device.size(104)), spacing: Device.isPad ? 18 : 12)]
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -218,7 +218,7 @@ struct SearchScreen: View {
                                     ForEach(row.items) { item in
                                         NavigationLink(value: MetaRef(item)) {
                                             PosterCard(title: item.name, subtitle: item.releaseInfo,
-                                                       poster: item.poster, width: 104)
+                                                       poster: item.poster, width: Device.size(104))
                                         }
                                         .buttonStyle(CardButtonStyle())
                                     }
@@ -265,13 +265,13 @@ struct SearchScreen: View {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(popular.items) { item in
                         NavigationLink(value: MetaRef(item)) {
-                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: 104)
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
                         }
                         .buttonStyle(CardButtonStyle())
                     }
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, Device.margin)
         }
     }
 

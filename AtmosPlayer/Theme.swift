@@ -92,3 +92,36 @@ struct PressScaleButtonStyle: ButtonStyle {
             .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
+
+// MARK: - iPad
+
+/// Sizes that differ between iPhone and iPad.
+enum Device {
+    static let isPad = UIDevice.current.userInterfaceIdiom == .pad
+    /// Posters, cards and stills are this much larger on iPad's bigger screen.
+    static let scale: CGFloat = isPad ? 1.32 : 1
+    static func size(_ value: CGFloat) -> CGFloat { (value * scale).rounded() }
+    /// The page's side margin.
+    static let margin: CGFloat = isPad ? 32 : 20
+}
+
+/// Keeps lists and forms to a comfortable reading width on iPad instead of stretching every
+/// row across the whole screen. The list still scrolls from anywhere.
+private struct ReadableWidth: ViewModifier {
+    let width: CGFloat
+    @State private var available: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        if Device.isPad {
+            content
+                .contentMargins(.horizontal, max(0, (available - width) / 2), for: .scrollContent)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { available = $0 }
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func readableWidth(_ width: CGFloat = 760) -> some View { modifier(ReadableWidth(width: width)) }
+}

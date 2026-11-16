@@ -47,6 +47,9 @@ struct PlayerView: View {
     @State private var speed: Float = 1
     @State private var audioDelay = 0.0
     @State private var subtitleOffset = 0.0
+    /// Where the centre buttons and the bottom controls sit, so subtitles can avoid them.
+    @State private var centerRect = CGRect.zero
+    @State private var bottomTop: CGFloat = 0
     @State private var seekFlash: SeekFlash?
     @State private var loadError: String?
     @State private var onlineSubtitles: [AddonSubtitle] = []
@@ -94,7 +97,8 @@ struct PlayerView: View {
                 SubtitleOverlay(engine: engine, clock: engine.clock,
                                 offset: subtitleOffset, scale: subtitleScale,
                                 background: subtitleBackground,
-                                lifted: showControls && !locked)
+                                lifted: showControls && !locked,
+                                centerControls: centerRect, bottomControlsTop: bottomTop)
 
                 HiddenVolumeView()
                     .frame(width: 1, height: 1)
@@ -166,6 +170,7 @@ struct PlayerView: View {
                     errorBanner(loadError)
                 }
             }
+            .coordinateSpace(.named(SubtitleOverlay.space))
             .animation(.easeInOut(duration: 0.35), value: starting)
             .animation(.spring(response: 0.35, dampingFraction: 0.9), value: sidePanel)
         }
@@ -181,7 +186,8 @@ struct PlayerView: View {
         .onAppear {
             status.attach(engine)
             UIApplication.shared.isIdleTimerDisabled = true
-            OrientationLock.set(.landscape)
+            // iPad plays in whichever way it is held; iPhone turns to landscape.
+            OrientationLock.set(Device.isPad ? .all : .landscape)
             pip.attach(engine)
             scheduleHide()
         }
@@ -434,6 +440,8 @@ struct PlayerView: View {
         }
         .buttonStyle(PressScaleButtonStyle())
         .shadow(color: .black.opacity(0.4), radius: 12)
+        // Subtitles keep clear of these buttons while the controls show.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(SubtitleOverlay.space)) } action: { centerRect = $0 }
     }
 
     private var bottomArea: some View {
@@ -476,6 +484,7 @@ struct PlayerView: View {
             ScrubBar(engine: engine, clock: engine.clock, scrubbing: $scrubbing,
                      showRemaining: $showRemaining) { scheduleHide() }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(SubtitleOverlay.space)).minY } action: { bottomTop = $0 }
     }
 
     // MARK: Menus
@@ -1128,6 +1137,11 @@ struct SubtitleOverlay: View {
     let scale: Double
     let background: Bool
     let lifted: Bool
+    /// The play/skip buttons and the top edge of the bottom controls, in the player's space.
+    var centerControls: CGRect = .zero
+    var bottomControlsTop: CGFloat = 0
+    static let space = "player"
+    @State private var textHeight: CGFloat = 0
     @AppStorage(Prefs.subtitleColor) private var colorName = "white"
     @AppStorage(Prefs.subtitleBold) private var bold = true
     @AppStorage(Prefs.subtitleBackgroundOpacity) private var backgroundOpacity = 0.45
@@ -1152,10 +1166,8 @@ struct SubtitleOverlay: View {
                         .position(x: rect.midX * geo.size.width, y: rect.midY * geo.size.height)
                 }
                 if !text.isEmpty {
-                    VStack {
-                        Spacer()
-                        Text(text)
-                            .font(.system(size: 20 * scale, weight: bold ? .semibold : .regular))
+                    Text(text)
+                            .font(.system(size: (Device.isPad ? 28 : 20) * scale, weight: bold ? .semibold : .regular))
                             .multilineTextAlignment(.center)
                             .foregroundStyle(SubtitlePreferences.color(colorName))
                             .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
@@ -1164,14 +1176,30 @@ struct SubtitleOverlay: View {
                             .background(background ? Color.black.opacity(backgroundOpacity) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                             .padding(.horizontal, 40)
-                            .padding(.bottom, (lifted ? 130 : 24) + lift)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { textHeight = $0 }
+                            .frame(maxWidth: geo.size.width)
+                            .position(x: geo.size.width / 2,
+                                      y: bottomEdge(in: geo) - textHeight / 2)
                             .animation(.easeInOut(duration: 0.2), value: lifted)
-                    }
-                    .frame(maxWidth: .infinity)
                 }
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// The y of the subtitle's bottom edge. With the controls up it sits between the play button
+    /// and the bottom controls when it fits there, and above the play button when it doesn't
+    /// (iPhone in landscape), so it never runs into either.
+    private func bottomEdge(in geo: GeometryProxy) -> CGFloat {
+        let resting = geo.size.height - 24 - lift
+        guard lifted, bottomControlsTop > 0, centerControls != .zero else { return resting }
+        let originY = geo.frame(in: .named(Self.space)).minY
+        let gap: CGFloat = 10
+        let aboveBottom = bottomControlsTop - originY - gap
+        let belowCenter = centerControls.maxY - originY + gap
+        if aboveBottom - belowCenter >= textHeight { return min(resting, aboveBottom) }
+        return max(centerControls.minY - originY - gap, textHeight + 8)
     }
 }
 
