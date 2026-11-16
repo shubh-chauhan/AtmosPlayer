@@ -43,22 +43,35 @@ final class DeviceLevels {
     }
 }
 
-/// A 1-point, nearly transparent volume view that hands its slider to `DeviceLevels`.
+/// A volume view that is in the window (so the system volume overlay stays away) but can never
+/// be seen: it sits outside a 1-point container that clips it, and the container itself is
+/// placed off screen. On iOS 26 the slider's handle is a glass capsule that ignores a low alpha,
+/// so transparency alone isn't enough.
 struct HiddenVolumeView: UIViewRepresentable {
-    func makeUIView(context: Context) -> MPVolumeView {
-        let view = MPVolumeView(frame: CGRect(x: -100, y: -100, width: 1, height: 1))
-        view.alpha = 0.01
-        view.isUserInteractionEnabled = false
-        DispatchQueue.main.async {
-            DeviceLevels.shared.slider = view.subviews.compactMap { $0 as? UISlider }.first
-        }
-        return view
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        container.clipsToBounds = true
+        container.isUserInteractionEnabled = false
+        container.backgroundColor = .clear
+        let volume = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 160, height: 40))
+        volume.alpha = 0.01
+        volume.isUserInteractionEnabled = false
+        container.addSubview(volume)
+        DispatchQueue.main.async { Self.capture(volume) }
+        return container
     }
 
-    func updateUIView(_ view: MPVolumeView, context: Context) {
-        if DeviceLevels.shared.slider == nil {
-            DeviceLevels.shared.slider = view.subviews.compactMap { $0 as? UISlider }.first
+    func updateUIView(_ container: UIView, context: Context) {
+        if DeviceLevels.shared.slider == nil,
+           let volume = container.subviews.first as? MPVolumeView {
+            Self.capture(volume)
         }
+    }
+
+    private static func capture(_ volume: MPVolumeView) {
+        guard let slider = volume.subviews.compactMap({ $0 as? UISlider }).first else { return }
+        slider.setThumbImage(UIImage(), for: .normal)
+        DeviceLevels.shared.slider = slider
     }
 }
 

@@ -96,7 +96,9 @@ struct PlayerView: View {
 
                 HiddenVolumeView()
                     .frame(width: 1, height: 1)
+                    .position(x: -50, y: -50)
                     .allowsHitTesting(false)
+                    .accessibilityHidden(true)
 
                 gestureLayer(size: geo.size)
 
