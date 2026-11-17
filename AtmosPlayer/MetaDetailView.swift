@@ -203,8 +203,10 @@ struct MetaDetailView: View {
                     .init(color: .black.opacity(0.35), location: 0),
                     .init(color: .clear, location: 0.2),
                     .init(color: .clear, location: 0.45),
-                    .init(color: .black.opacity(0.55), location: 0.8),
-                    .init(color: .black.opacity(0.7), location: 1),
+                    .init(color: .black.opacity(0.55), location: 0.78),
+                    .init(color: .black.opacity(0.45), location: 0.92),
+                    // Clear at the very bottom, so the hero runs into the page below without a seam.
+                    .init(color: .clear, location: 1),
                 ], startPoint: .top, endPoint: .bottom)
                 if wide {
                     LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.45), .clear],

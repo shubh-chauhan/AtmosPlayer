@@ -109,13 +109,13 @@ enum Device {
 /// row across the whole screen. The list still scrolls from anywhere.
 private struct ReadableWidth: ViewModifier {
     let width: CGFloat
-    @State private var available: CGFloat = 0
 
     func body(content: Content) -> some View {
         if Device.isPad {
             content
-                .contentMargins(.horizontal, max(0, (available - width) / 2), for: .scrollContent)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { available = $0 }
+                .frame(maxWidth: width)
+                .frame(maxWidth: .infinity)
+                .background(Color.black.ignoresSafeArea())
         } else {
             content
         }
