@@ -16,7 +16,7 @@ enum Cinemeta {
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .useProtocolCachePolicy
         config.urlCache = URLCache(memoryCapacity: 8 << 20, diskCapacity: 64 << 20)
-        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForRequest = 12
         return URLSession(configuration: config)
     }()
 
@@ -31,9 +31,7 @@ enum Cinemeta {
     /// Catalog items, de-duplicated. Answers are also kept on disk so Home opens instantly.
     static func catalog(type: String, id: String, genre: String? = nil, skip: Int = 0) async -> [MetaPreview] {
         guard let url = catalogURL(type: type, id: id, genre: genre, skip: skip) else { return [] }
-        guard let (data, response) = try? await session.data(from: url),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let items = decode(data) else {
+        guard let data = await MetaHTTP.data(url, session: session), let items = decode(data) else {
             return []
         }
         if skip == 0 { HomeDiskCache.save(data, for: url) }
@@ -45,8 +43,7 @@ enum Cinemeta {
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
         guard let encoded = text.addingPercentEncoding(withAllowedCharacters: allowed),
               let url = URL(string: "\(base)/catalog/\(type)/top/search=\(encoded).json"),
-              let (data, response) = try? await session.data(from: url),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+              let data = await MetaHTTP.data(url, session: session) else { return [] }
         return decode(data) ?? []
     }
 
@@ -66,9 +63,11 @@ enum Cinemeta {
         return decode(data)
     }
 
+    /// Nil when Cinemeta has no details under this type (it answers `{}`), or can't be reached
+    /// after a retry.
     static func meta(type: String, id: String) async -> StremioMeta? {
         guard let url = URL(string: "\(base)/meta/\(type)/\(id).json"),
-              let (data, _) = try? await session.data(from: url) else { return nil }
+              let data = await MetaHTTP.data(url, session: session) else { return nil }
         return try? JSONDecoder().decode(CinemetaMetaResponse.self, from: data).meta
     }
 

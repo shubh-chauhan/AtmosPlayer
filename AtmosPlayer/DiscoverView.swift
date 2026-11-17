@@ -198,7 +198,12 @@ struct SearchScreen: View {
 
     @State private var query = ""
     @State private var results: [CatalogRow] = []
+    @State private var people: [IMDbSuggest.Person] = []
+    /// Searches still out: the main sources, and your addons.
     @State private var pending = 0
+    @State private var addonsPending = 0
+    /// What the rows on screen are for; older rows stay (dimmed) until the new ones arrive.
+    @State private var shownQuery = ""
     /// What was searched for lately, newest first, one per line.
     @AppStorage("search.recent") private var recentRaw = ""
 
@@ -223,33 +228,34 @@ struct SearchScreen: View {
                     if trimmed.isEmpty {
                         idleContent
                     } else {
-                        ForEach(results) { row in
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(row.title).font(.title3.bold()).foregroundStyle(.white)
-                                LazyVGrid(columns: columns, spacing: 16) {
-                                    ForEach(row.items) { item in
-                                        NavigationLink(value: MetaRef(item)) {
-                                            PosterCard(title: item.name, subtitle: item.releaseInfo,
-                                                       poster: item.poster, width: Device.size(104))
-                                        }
-                                        .buttonStyle(CardButtonStyle())
-                                        .simultaneousGesture(TapGesture().onEnded { remember(trimmed) })
-                                    }
-                                }
+                        Group {
+                            ForEach(results) { row in
+                                resultRow(row)
+                                    .transition(.opacity)
                             }
-                            .transition(.opacity)
+                            if !people.isEmpty {
+                                peopleRow
+                            }
                         }
-                        if pending > 0 {
-                            HStack(spacing: 10) {
-                                ProgressView()
-                                Text(results.isEmpty ? "Searching…" : "Still asking your addons…")
-                                    .font(.footnote).foregroundStyle(.secondary)
+                        .opacity(shownQuery == trimmed ? 1 : 0.45)
+                        if results.isEmpty && people.isEmpty {
+                            if pending + addonsPending > 0 || shownQuery != trimmed {
+                                HStack(spacing: 10) {
+                                    ProgressView()
+                                    Text("Searching…").font(.footnote).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 80)
+                            } else {
+                                ContentUnavailableView.search(text: trimmed)
+                                    .padding(.top, 60)
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, results.isEmpty ? 80 : 0)
-                        } else if results.isEmpty {
-                            ContentUnavailableView.search(text: trimmed)
-                                .padding(.top, 60)
+                        } else if addonsPending > 0 && pending == 0 && shownQuery == trimmed {
+                            // Quiet: the main results are in; a slow addon may still add a row.
+                            Text(addonsPending == 1 ? "Checking 1 more addon…" : "Checking \(addonsPending) more addons…")
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.4))
+                                .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -265,6 +271,67 @@ struct SearchScreen: View {
             .modifier(BrowseDestinations())
             .task(id: trimmed) { await search(trimmed) }
             .task { await feed.load() }
+            .task {
+                // CI screenshots only: type a search.
+                if PreviewMode.screen == "search-results", query.isEmpty {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    query = "the office"
+                }
+            }
+        }
+    }
+
+    /// "Top Results" as a grid; the other sources as rows you swipe through.
+    @ViewBuilder
+    private func resultRow(_ row: CatalogRow) -> some View {
+        if row.id == "imdb/top" {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(row.title).font(.title3.bold()).foregroundStyle(.white)
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(row.items) { item in resultCard(item) }
+                }
+            }
+            .padding(.horizontal, Device.margin)
+        } else {
+            Shelf(title: row.title) {
+                ForEach(row.items) { item in resultCard(item) }
+            }
+        }
+    }
+
+    private func resultCard(_ item: MetaPreview) -> some View {
+        NavigationLink(value: MetaRef(item)) {
+            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
+        }
+        .buttonStyle(CardButtonStyle())
+        .simultaneousGesture(TapGesture().onEnded { remember(trimmed) })
+    }
+
+    private var peopleRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("People").font(.title3.bold()).foregroundStyle(.white)
+                .padding(.horizontal, Device.margin)
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(people) { person in
+                        NavigationLink(value: PersonRoute(name: person.name)) {
+                            VStack(spacing: 6) {
+                                PersonAvatar(name: person.name, size: Device.size(76))
+                                Text(person.name)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(width: Device.size(84))
+                        }
+                        .buttonStyle(CardButtonStyle())
+                        .simultaneousGesture(TapGesture().onEnded { remember(trimmed) })
+                    }
+                }
+                .padding(.horizontal, Device.margin)
+            }
+            .scrollIndicators(.hidden)
         }
     }
 
@@ -320,62 +387,102 @@ struct SearchScreen: View {
         }
     }
 
-    /// Cinemeta answers first (it is fast and covers everything on IMDb); each addon's results
-    /// appear as soon as that addon answers, so a slow one never holds the screen.
+    /// IMDb's suggestions (best match first, typo-tolerant, with people) and Cinemeta's movie and
+    /// series search run together; each addon's results appear as it answers. Addons get 8
+    /// seconds, so a slow or broken one never keeps the screen waiting.
     private func search(_ text: String) async {
         guard !text.isEmpty else {
             results = []
+            people = []
             pending = 0
+            addonsPending = 0
+            shownQuery = ""
             return
         }
         // Wait until typing pauses; a newer keystroke cancels this task.
-        try? await Task.sleep(nanoseconds: 350_000_000)
+        try? await Task.sleep(nanoseconds: 300_000_000)
         if Task.isCancelled { return }
 
-        struct Job: Sendable {
-            let order: Int
-            let id: String
-            let title: String
-            let run: @Sendable () async -> [MetaPreview]
+        enum Answer {
+            case imdb(CatalogRow?, [IMDbSuggest.Person])
+            case row(order: Int, CatalogRow?, addon: Bool)
         }
-        var jobs: [Job] = [
-            Job(order: 0, id: "cinemeta/movie", title: "Movies") { await Cinemeta.search(type: "movie", text) },
-            Job(order: 1, id: "cinemeta/series", title: "Series") { await Cinemeta.search(type: "series", text) },
-        ]
-        let others = addons.addons.filter { !$0.transportURL.contains("v3-cinemeta.strem.io") }
+        let others = addons.addons.filter { !$0.transportURL.contains("cinemeta") }
         let named = others.filter { addon in addon.manifest.catalogs.contains { $0.isSearchable } }.count > 1
+        var addonJobs: [(order: Int, id: String, title: String, addon: InstalledAddon, catalog: StremioCatalog)] = []
         for addon in others {
             for catalog in addon.manifest.catalogs where catalog.isSearchable {
-                var title = "\(catalog.name ?? CatalogLoader.typeLabel(catalog.type))"
+                var title = catalog.name ?? CatalogLoader.typeLabel(catalog.type)
                 if named || title.isEmpty { title = "\(addon.manifest.name) · \(CatalogLoader.typeLabel(catalog.type))" }
-                jobs.append(Job(order: jobs.count, id: "\(addon.id)/\(catalog.type)/\(catalog.id)", title: title) {
-                    (try? await StremioClient.catalog(addon, catalog, search: text)) ?? []
-                })
+                addonJobs.append((3 + addonJobs.count, "\(addon.id)/\(catalog.type)/\(catalog.id)", title, addon, catalog))
             }
         }
 
-        results = []
-        pending = jobs.count
+        pending = 3
+        addonsPending = addonJobs.count
         var arrived: [(Int, CatalogRow)] = []
-        await withTaskGroup(of: (Int, CatalogRow?).self) { group in
-            for job in jobs {
+        var fresh = true
+        // The first answer replaces the previous search's rows; later ones add to them.
+        func show(_ update: () -> Void) {
+            if fresh {
+                fresh = false
+                results = []
+                people = []
+                shownQuery = text
+            }
+            withAnimation(.easeOut(duration: 0.2)) { update() }
+        }
+
+        await withTaskGroup(of: Answer.self) { group in
+            group.addTask {
+                let found = await IMDbSuggest.search(text)
+                let top = Array(found.titles.prefix(10))
+                return .imdb(top.isEmpty ? nil : CatalogRow(id: "imdb/top", title: "Top Results", items: top),
+                             Array(found.people.prefix(12)))
+            }
+            group.addTask {
+                let items = await Cinemeta.search(type: "movie", text)
+                return .row(order: 1, items.isEmpty ? nil : CatalogRow(id: "cinemeta/movie", title: "Movies", items: items), addon: false)
+            }
+            group.addTask {
+                let items = await Cinemeta.search(type: "series", text)
+                return .row(order: 2, items.isEmpty ? nil : CatalogRow(id: "cinemeta/series", title: "Series", items: items), addon: false)
+            }
+            for job in addonJobs {
                 group.addTask {
-                    let items = await job.run()
-                    return (job.order, items.isEmpty ? nil : CatalogRow(id: job.id, title: job.title, items: items))
+                    let items = (try? await StremioClient.catalog(job.addon, job.catalog, search: text, timeout: 8)) ?? []
+                    return .row(order: job.order, items.isEmpty ? nil : CatalogRow(id: job.id, title: job.title, items: items),
+                                addon: true)
                 }
             }
-            for await (order, row) in group {
+            for await answer in group {
                 if Task.isCancelled { group.cancelAll(); return }
-                pending -= 1
-                if let row {
-                    arrived.append((order, row))
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        results = arrived.sorted { $0.0 < $1.0 }.map { $0.1 }
-                    }
+                var row: (Int, CatalogRow)?
+                var found: [IMDbSuggest.Person] = []
+                switch answer {
+                case .imdb(let top, let list):
+                    pending -= 1
+                    if let top { row = (0, top) }
+                    found = list
+                case .row(let order, let result, let addon):
+                    if addon { addonsPending -= 1 } else { pending -= 1 }
+                    if let result { row = (order, result) }
+                }
+                guard row != nil || !found.isEmpty else { continue }
+                if let row { arrived.append(row) }
+                let sorted = arrived.sorted { $0.0 < $1.0 }.map { $0.1 }
+                show {
+                    results = sorted
+                    if !found.isEmpty { people = found }
                 }
             }
         }
-        if !Task.isCancelled { pending = 0 }
+        if !Task.isCancelled {
+            pending = 0
+            addonsPending = 0
+            // Nothing anywhere: clear the old rows so "No Results" shows.
+            if fresh { show {} }
+        }
     }
 }
 
@@ -386,7 +493,7 @@ enum PreviewMode {
     static var initialTab: Int {
         switch screen {
         case "stremio": return 2
-        case "search": return 3
+        case "search", "search-results": return 3
         case "settings": return 4
         default: return 0
         }

@@ -148,7 +148,12 @@ struct HomeScreen: View {
                 // CI screenshots only: open a title page.
                 if PreviewMode.screen?.hasPrefix("detail") == true, path.isEmpty {
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    path.append(MetaRef(id: "tt0903747", type: "series", name: "Breaking Bad", poster: nil))
+                    if PreviewMode.screen == "detail-fallback" {
+                        // Listed by Cinemeta search as a series, but only has details as a film.
+                        path.append(MetaRef(id: "tt10163430", type: "series", name: "121212", poster: nil))
+                    } else {
+                        path.append(MetaRef(id: "tt0903747", type: "series", name: "Breaking Bad", poster: nil))
+                    }
                 }
             }
         }

@@ -85,6 +85,10 @@ enum ArtworkURL {
 
     static func best(_ raw: String?, maxPixel: Int) -> URL? {
         guard var text = raw, !text.isEmpty else { return nil }
+        // IMDb artwork (from search): ask Amazon's image server for the size needed, not the original.
+        if text.contains("media-amazon.com/images/"), let range = text.range(of: "._V1_") {
+            text = String(text[..<range.lowerBound]) + "._V1_QL80_UX\(min(maxPixel, 1600))_.jpg"
+        }
         if text.contains("images.metahub.space/poster/") {
             let size = maxPixel > 800 ? "large" : "medium"
             for tier in ["small", "medium", "large"] where tier != size {

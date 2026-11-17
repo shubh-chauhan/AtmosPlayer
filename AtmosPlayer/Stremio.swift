@@ -525,16 +525,18 @@ enum StremioClient {
         return (try JSONDecoder().decode(StremioManifest.self, from: data), data)
     }
 
-    static func catalog(_ addon: InstalledAddon, _ catalog: StremioCatalog, search: String? = nil) async throws -> [MetaPreview] {
+    static func catalog(_ addon: InstalledAddon, _ catalog: StremioCatalog, search: String? = nil,
+                        timeout: TimeInterval = 25) async throws -> [MetaPreview] {
         var extra = ""
         if let search { extra = "/search=\(encode(search))" }
         let url = try resourceURL(addon, "catalog", catalog.type, catalog.id, extra: extra)
-        return try JSONDecoder().decode(CatalogResponse.self, from: try await get(url)).metas
+        return try JSONDecoder().decode(CatalogResponse.self, from: try await get(url, timeout: timeout)).metas
     }
 
-    static func meta(_ addon: InstalledAddon, type: String, id: String) async throws -> StremioMeta {
+    static func meta(_ addon: InstalledAddon, type: String, id: String,
+                     timeout: TimeInterval = 25) async throws -> StremioMeta {
         let url = try resourceURL(addon, "meta", type, id)
-        return try JSONDecoder().decode(MetaResponse.self, from: try await get(url)).meta
+        return try JSONDecoder().decode(MetaResponse.self, from: try await get(url, timeout: timeout)).meta
     }
 
     static func streams(_ addon: InstalledAddon, type: String, id: String) async throws -> [StremioStream] {
@@ -554,8 +556,8 @@ enum StremioClient {
         return url
     }
 
-    private static func get(_ url: URL) async throws -> Data {
-        var request = URLRequest(url: url, timeoutInterval: 25)
+    private static func get(_ url: URL, timeout: TimeInterval = 25) async throws -> Data {
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {

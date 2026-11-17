@@ -20,6 +20,8 @@ struct MetaDetailView: View {
 
     @State private var meta: StremioMeta?
     @State private var loading = true
+    /// Every source was tried and none answered.
+    @State private var loadFailed = false
     @State private var season: Int = 1
     @State private var expandedDescription = false
     @State private var similar: [MetaPreview] = []
@@ -44,7 +46,12 @@ struct MetaDetailView: View {
     private var type: String { meta?.type ?? ref.type }
     private var background: String? { meta?.background ?? ref.background ?? meta?.poster ?? ref.poster }
     private var logo: String? { meta?.logo ?? ref.logo }
-    private var isSeries: Bool { !(meta?.videos.isEmpty ?? true) || ref.type == "series" }
+    /// The details decide (a title listed as a series may turn out to be a film); until they
+    /// arrive, the type it was listed with.
+    private var isSeries: Bool {
+        if let meta { return meta.type == "series" || !meta.videos.isEmpty }
+        return ref.type == "series"
+    }
 
     private var episodes: [StremioMeta.Video] {
         seasons.isEmpty ? orderedVideos : orderedVideos.filter { $0.season == season }
@@ -131,6 +138,14 @@ struct MetaDetailView: View {
                         }
                         if loading && meta == nil {
                             ProgressView().frame(maxWidth: .infinity)
+                        } else if loadFailed && meta == nil {
+                            loadFailedNotice
+                        } else if let meta, isSeries, orderedVideos.isEmpty {
+                            Label(meta.status == "Ended" ? "No episodes are listed for this series."
+                                    : "Episodes haven't been announced yet.", systemImage: "calendar")
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.6))
+                                .padding(.horizontal, Device.margin)
                         }
                         if let meta, !(meta.cast.isEmpty && meta.directors.isEmpty && meta.writers.isEmpty) {
                             CastShelf(meta: meta)
@@ -327,7 +342,7 @@ struct MetaDetailView: View {
                             .lineLimit(1)
                     }
                 }
-            } else {
+            } else if loading {
                 RoundedRectangle(cornerRadius: 12).fill(.white.opacity(0.15)).frame(height: 50)
             }
 
@@ -564,24 +579,46 @@ struct MetaDetailView: View {
         watch.entries.first { $0.ref.videoId == video.id }?.progress
     }
 
+    private var loadFailedNotice: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.title2)
+                .foregroundStyle(.white.opacity(0.6))
+            Text("Couldn't load the details")
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text("Cinemeta, TVmaze, IMDb and your addons didn't answer. Check your connection and try again.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white.opacity(0.6))
+            Button {
+                Task { await load() }
+            } label: {
+                Label("Try Again", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 18)
+                    .frame(height: 40)
+                    .background(.white, in: Capsule())
+                    .foregroundStyle(.black)
+            }
+            .buttonStyle(CardButtonStyle())
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: 420)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Device.margin)
+    }
+
     private func load() async {
         guard meta == nil else { return }
         loading = true
+        loadFailed = false
         defer { loading = false }
-        var found: StremioMeta?
-        // Cinemeta has the richest details for IMDb titles (cast, trailer, ratings, status).
-        if ref.id.hasPrefix("tt"), ref.type == "movie" || ref.type == "series" {
-            found = await Cinemeta.meta(type: ref.type, id: ref.id)
+        // Cinemeta first (richest for IMDb titles), then your addons, TVmaze and IMDb.
+        guard let found = await MetaResolver.resolve(ref, addons: addons.addons) else {
+            if !Task.isCancelled { withAnimation { loadFailed = true } }
+            return
         }
-        if found == nil {
-            for addon in addons.supporting("meta", type: ref.type, id: ref.id) {
-                if let result = try? await StremioClient.meta(addon, type: ref.type, id: ref.id) {
-                    found = result
-                    break
-                }
-            }
-        }
-        guard let found else { return }
         let ordered = EpisodeQueue.ordered(found.videos)
         var seen: [Int] = []
         for video in ordered {
@@ -759,16 +796,15 @@ enum EpisodeQueue {
     @MainActor
     static func queue(after video: VideoRef, addons: AddonStore) async -> [VideoRef] {
         guard video.type == "series" else { return [] }
-        for addon in addons.supporting("meta", type: video.type, id: video.metaId) {
-            guard let meta = try? await StremioClient.meta(addon, type: video.type, id: video.metaId) else { continue }
-            let background = meta.background ?? video.background
-            return following(video.videoId, in: ordered(meta.videos)).map { episode in
-                let label = [episode.code, episode.title].compactMap { $0 }.joined(separator: " · ")
-                return VideoRef(type: video.type, metaId: video.metaId, videoId: episode.id, name: video.name,
-                                poster: video.poster, episodeLabel: label.isEmpty ? episode.id : label,
-                                background: episode.thumbnail ?? background)
-            }
+        let ref = MetaRef(id: video.metaId, type: video.type, name: video.name, poster: video.poster,
+                          background: video.background)
+        guard let meta = await MetaResolver.resolve(ref, addons: addons.addons) else { return [] }
+        let background = meta.background ?? video.background
+        return following(video.videoId, in: ordered(meta.videos)).map { episode in
+            let label = [episode.code, episode.title].compactMap { $0 }.joined(separator: " · ")
+            return VideoRef(type: video.type, metaId: video.metaId, videoId: episode.id, name: video.name,
+                            poster: video.poster, episodeLabel: label.isEmpty ? episode.id : label,
+                            background: episode.thumbnail ?? background)
         }
-        return []
     }
 }
