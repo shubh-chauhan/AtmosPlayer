@@ -8,6 +8,7 @@ struct StreamsView: View {
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @EnvironmentObject private var watch: WatchStore
+    @ObservedObject private var downloads = DownloadStore.shared
 
     private struct AddonResult: Identifiable {
         let id: String
@@ -88,6 +89,21 @@ struct StreamsView: View {
                 .listRowBackground(Color.clear)
             }
 
+            if let saved = downloads.entry(forVideo: video.videoId) {
+                Section("On this \(Device.isPad ? "iPad" : "iPhone")") {
+                    DownloadRow(entry: saved) {
+                        if let url = downloads.fileURL(saved) {
+                            coordinator.play(DownloadPlayback.item(saved, url: url, queue: queue))
+                        } else if saved.phase == .failed {
+                            downloads.retry(saved)
+                        }
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button("Delete", systemImage: "trash", role: .destructive) { downloads.remove(saved) }
+                    }
+                }
+            }
+
             if totalCount > 0 || !savedFilters.isEmpty {
                 Section {
                     StreamFilterBar(available: available, selected: selectedFilters, sort: $sort,
@@ -117,7 +133,8 @@ struct StreamsView: View {
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(shown) { stream in
-                            StreamRow(stream: stream, isLast: isLast(stream, addonId: result.id)) {
+                            StreamRow(stream: stream, isLast: isLast(stream, addonId: result.id),
+                                      onDownload: DownloadStore.canDownload(stream.playableURL) ? { download(stream) } : nil) {
                                 play(stream, from: result.id)
                             }
                         }
@@ -180,6 +197,13 @@ struct StreamsView: View {
         return lastStream.matches(stream)
     }
 
+    private func download(_ stream: StremioStream) {
+        guard let url = stream.playableURL else { return }
+        downloads.start(video: video, url: url, headers: stream.requestHeaders,
+                        label: stream.name ?? stream.title)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
     private func play(_ stream: StremioStream, from addonId: String) {
         let saved = SavedStream(stream, addonId: addonId, videoId: video.videoId)
         if let item = QuickPlay.item(video: video, queue: queue, stream: saved) {
@@ -191,6 +215,8 @@ struct StreamsView: View {
 struct StreamRow: View {
     let stream: StremioStream
     var isLast = false
+    /// Saves the stream for offline; nil when it can't be saved (a playlist, or no link).
+    var onDownload: (() -> Void)? = nil
     let onPlay: () -> Void
 
     var body: some View {
@@ -238,8 +264,17 @@ struct StreamRow: View {
         .buttonStyle(.plain)
         .disabled(stream.playableURL == nil)
         .contextMenu {
+            if let onDownload {
+                Button("Download", systemImage: "arrow.down.circle") { onDownload() }
+            }
             if let url = stream.playableURL {
                 Button("Copy Link", systemImage: "doc.on.doc") { UIPasteboard.general.string = url.absoluteString }
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            if let onDownload {
+                Button("Download", systemImage: "arrow.down.circle") { onDownload() }
+                    .tint(Brand.accent)
             }
         }
     }

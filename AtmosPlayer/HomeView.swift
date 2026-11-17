@@ -26,6 +26,8 @@ struct HomeView: View {
                     }
                 }
 
+                DownloadsSection()
+
                 Section("Play a link") {
                     TextField("https://… (.mkv, .mp4, .m3u8)", text: $urlText)
                         .keyboardType(.URL)

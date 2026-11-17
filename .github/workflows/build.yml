@@ -15,6 +15,8 @@ jobs:
     # AetherEngine needs Xcode 27 / Swift 6.4. `xcode-27` is GitHub's hosted image for it.
     runs-on: xcode-27
     timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +42,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="0.1.${{ github.run_number }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia"
 
       - name: Ad-hoc sign with entitlements
@@ -69,6 +73,77 @@ jobs:
           name: AtmosPlayer-unsigned-ipa
           path: AtmosPlayer.ipa
           if-no-files-found: error
+
+      - name: Publish for SideStore
+        # Puts the .ipa on a fixed download link and writes the source file SideStore reads, so
+        # a new build shows up in SideStore under My Apps > Updates.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          NOTES=$(git log -1 --pretty=%s)
+          gh release view sidestore >/dev/null 2>&1 || \
+            gh release create sidestore --title "Latest build" --notes "The newest Atmos Player build, for SideStore." --latest
+          gh release upload sidestore AtmosPlayer.ipa --clobber
+          gh release edit sidestore --notes "Atmos Player $VERSION: $NOTES"
+          mkdir source
+          cp AtmosPlayer/Assets.xcassets/AppIcon.appiconset/AppIcon.png source/icon.png
+          VERSION="$VERSION" NOTES="$NOTES" REPO="${{ github.repository }}" OWNER="${{ github.repository_owner }}" \
+          BUILD="${{ github.run_number }}" python3 - <<'PY'
+          import json, os, datetime
+          repo = os.environ["REPO"]
+          raw = f"https://raw.githubusercontent.com/{repo}/source"
+          download = f"https://github.com/{repo}/releases/download/sidestore/AtmosPlayer.ipa"
+          size = os.path.getsize("AtmosPlayer.ipa")
+          date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          description = "Stremio streams with Dolby Atmos and Dolby Vision."
+          version = {
+              "version": os.environ["VERSION"],
+              "buildVersion": os.environ["BUILD"],
+              "date": date,
+              "localizedDescription": os.environ["NOTES"],
+              "downloadURL": download,
+              "size": size,
+              "minOSVersion": "18.0",
+          }
+          app = {
+              "name": "Atmos Player",
+              "bundleIdentifier": "com.atmosplayer.app",
+              "developerName": os.environ["OWNER"],
+              "subtitle": "Atmos and Dolby Vision player",
+              "localizedDescription": description,
+              "iconURL": f"{raw}/icon.png",
+              "tintColor": "6B66FF",
+              "category": "entertainment",
+              "screenshots": [],
+              "versions": [version],
+              "appPermissions": {"entitlements": [], "privacy": {}},
+              # Older source readers look for these at the top level.
+              "version": version["version"],
+              "versionDate": date,
+              "versionDescription": version["localizedDescription"],
+              "downloadURL": download,
+              "size": size,
+          }
+          source = {
+              "name": "Atmos Player",
+              "identifier": "com.atmosplayer.source",
+              "subtitle": "Builds of Atmos Player",
+              "iconURL": f"{raw}/icon.png",
+              "sourceURL": f"{raw}/source.json",
+              "apps": [app],
+              "news": [],
+          }
+          json.dump(source, open("source/source.json", "w"), indent=2)
+          PY
+          cat source/source.json
+          cd source
+          git init -q -b source
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -qm "SideStore source for $VERSION"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" source
 
   preview:
     name: Simulator screenshots

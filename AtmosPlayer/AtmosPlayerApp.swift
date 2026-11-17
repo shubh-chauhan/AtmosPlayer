@@ -67,6 +67,8 @@ struct AtmosPlayerApp: App {
                     WatchedStore.shared.onChange = { metaId, type, watched, videoIds in
                         Task { await account.pushWatched(metaId: metaId, type: type, watched: watched, videoIds: videoIds) }
                     }
+                    // Picks up downloads that carried on while the app was closed.
+                    _ = DownloadStore.shared
                     await account.sync(addons: addons, watch: watch)
                 }
                 .onChange(of: scenePhase) { _, phase in

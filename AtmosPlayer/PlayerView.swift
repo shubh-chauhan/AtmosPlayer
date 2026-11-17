@@ -150,6 +150,12 @@ struct PlayerView: View {
 
                 upNextCard
 
+                if !locked && !starting && sidePanel == nil {
+                    SkipSegmentOverlay(engine: engine, clock: engine.clock, lifted: showControls) {
+                        interacted()
+                    }
+                }
+
                 if let sidePanel, !starting {
                     SidePanelContainer(title: sidePanel.title, onClose: closePanel) {
                         panelContent(sidePanel)
@@ -883,6 +889,78 @@ struct BufferingIndicator: View {
             .shadow(color: .black.opacity(0.5), radius: 8)
             .allowsHitTesting(false)
         }
+    }
+}
+
+/// "Skip Intro" / "Skip Recap": shown while playback is inside a chapter the file names as an
+/// intro, opening or recap, and jumps to that chapter's end. Files without named chapters
+/// simply never show it. Watches the clock itself so the player does not redraw on each tick.
+struct SkipSegmentOverlay: View {
+    @ObservedObject var engine: AetherEngine
+    @ObservedObject var clock: PlaybackClock
+    let lifted: Bool
+    let onSkip: () -> Void
+
+    private struct Segment: Equatable {
+        let label: String
+        let end: Double
+    }
+
+    private static func label(for name: String) -> String? {
+        let name = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if ["recap", "previously"].contains(where: { name.contains($0) }) { return "Skip Recap" }
+        if ["intro", "opening", "main title", "title sequence", "theme song"].contains(where: { name.contains($0) })
+            || ["op", "titles"].contains(name) {
+            return "Skip Intro"
+        }
+        return nil
+    }
+
+    private var segment: Segment? {
+        let chapters = engine.mediaChapters
+        let duration = engine.duration
+        let now = clock.currentTime
+        guard duration > 300, chapters.count > 1 else { return nil }
+        for (index, chapter) in chapters.enumerated() where index + 1 < chapters.count {
+            let end = chapters[index + 1].startSeconds
+            guard now >= chapter.startSeconds, now < end - 2 else { continue }
+            // An intro sits in the first part of the episode and is short.
+            guard chapter.startSeconds < duration * 0.4, end - chapter.startSeconds <= 300,
+                  let label = Self.label(for: chapter.name) else { return nil }
+            return Segment(label: label, end: end)
+        }
+        return nil
+    }
+
+    var body: some View {
+        let current = segment
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                if let current {
+                    Button {
+                        Task { await engine.seek(to: current.end) }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        onSkip()
+                    } label: {
+                        Label(current.label, systemImage: "forward.end.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 18)
+                            .frame(height: 44)
+                            .contentShape(Capsule())
+                            .glass(Capsule(), interactive: true)
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
+                    .foregroundStyle(.white)
+                    .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                }
+            }
+        }
+        .padding(.trailing, 24)
+        .padding(.bottom, lifted ? 138 : 36)
+        .animation(.easeInOut(duration: 0.25), value: current)
+        .animation(.easeInOut(duration: 0.2), value: lifted)
     }
 }
 

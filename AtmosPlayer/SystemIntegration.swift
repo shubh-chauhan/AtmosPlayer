@@ -17,6 +17,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         Self.orientationMask
     }
+
+    /// iOS woke the app because background downloads finished.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        guard identifier == DownloadStore.sessionId else { return completionHandler() }
+        DownloadStore.backgroundCompletion = completionHandler
+        _ = DownloadStore.shared
+    }
 }
 
 enum OrientationLock {
