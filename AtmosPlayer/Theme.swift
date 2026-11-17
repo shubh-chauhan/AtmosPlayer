@@ -123,5 +123,5 @@ private struct ReadableWidth: ViewModifier {
 }
 
 extension View {
-    func readableWidth(_ width: CGFloat = 760) -> some View { modifier(ReadableWidth(width: width)) }
+    func readableWidth(_ width: CGFloat = 660) -> some View { modifier(ReadableWidth(width: width)) }
 }
