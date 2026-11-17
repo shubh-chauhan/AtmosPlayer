@@ -55,6 +55,9 @@ struct PlayerView: View {
     @State private var onlineSubtitles: [AddonSubtitle] = []
     @State private var addedSubtitleURLs: [String: Int] = [:]
     @State private var nextState: NextState = .idle
+    /// Sleep timer: minutes until playback pauses, `SleepTimer.endOfEpisode`, or nil for off.
+    @State private var sleepChoice: Int?
+    @State private var sleepTask: Task<Void, Never>?
     /// One quiet retry per item when a stream fails mid-playback (a dropped connection,
     /// a debrid link that expired), resuming where it stopped.
     @State private var retriedItemId: UUID?
@@ -195,6 +198,7 @@ struct PlayerView: View {
             recordProgress(push: true)
             hideTask?.cancel()
             countdownTask?.cancel()
+            sleepTask?.cancel()
             torrent.stop()
             pip.stop()
             PlaybackRemote.shared.detach()
@@ -500,9 +504,13 @@ struct PlayerView: View {
     }
 
     private var moreMenu: some View {
-        MoreMenuButton(fill: fill, hasChapters: status.hasChapters, onOpen: holdControls) { action in
+        MoreMenuButton(fill: fill, hasChapters: status.hasChapters, sleep: sleepChoice,
+                       onOpen: holdControls) { action in
             menuHeld = false
             switch action {
+            case .sleep(let choice):
+                setSleepTimer(choice)
+                interacted()
             case .fill:
                 setFill(!fill)
                 interacted()
@@ -561,7 +569,22 @@ struct PlayerView: View {
         }
     }
 
+    /// Pauses after the chosen time. "End of episode" just stops the next one from starting.
+    private func setSleepTimer(_ choice: Int?) {
+        sleepTask?.cancel()
+        sleepChoice = choice
+        guard let minutes = choice, minutes > 0 else { return }
+        sleepTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(minutes) * 60 * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            if engine.state == .playing { engine.togglePlayPause() }
+            sleepChoice = nil
+            withAnimation(.easeInOut(duration: 0.2)) { showControls = true }
+        }
+    }
+
     private func startNextCountdown() {
+        guard sleepChoice != SleepTimer.endOfEpisode else { return }
         guard !item.queue.isEmpty, nextState == .idle, Prefs.bool(Prefs.autoplayNext, default: true) else { return }
         let seconds = UserDefaults.standard.object(forKey: Prefs.nextCountdown) as? Int ?? 8
         nextState = .countdown(seconds)
@@ -709,6 +732,7 @@ struct PlayerView: View {
         closing = true
         hideTask?.cancel()
         countdownTask?.cancel()
+        sleepTask?.cancel()
         if engine.state == .playing { engine.togglePlayPause() }
         coordinator.current = nil
     }
@@ -1244,16 +1268,29 @@ struct SpeedMenuButton: View, Equatable {
     }
 }
 
+enum SleepTimer {
+    static let minutes = [15, 30, 45, 60, 90]
+    static let endOfEpisode = -1
+
+    static func label(_ choice: Int?) -> String {
+        guard let choice else { return "Off" }
+        return choice == endOfEpisode ? "End of Episode" : "\(choice) min"
+    }
+}
+
 /// The ellipsis menu, rebuilt only when Fit/Fill or chapters change.
 struct MoreMenuButton: View, Equatable {
-    enum Action { case fill, chapters, tracks, settings, details, lock }
+    enum Action { case fill, chapters, tracks, settings, details, lock, sleep(Int?) }
 
     let fill: Bool
     let hasChapters: Bool
+    var sleep: Int? = nil
     let onOpen: () -> Void
     let onAction: (Action) -> Void
 
-    static func == (a: Self, b: Self) -> Bool { a.fill == b.fill && a.hasChapters == b.hasChapters }
+    static func == (a: Self, b: Self) -> Bool {
+        a.fill == b.fill && a.hasChapters == b.hasChapters && a.sleep == b.sleep
+    }
 
     var body: some View {
         Menu {
@@ -1267,6 +1304,17 @@ struct MoreMenuButton: View, Equatable {
             Button("Audio & Subtitles", systemImage: "text.bubble") { onAction(.tracks) }
             Button("Playback Settings", systemImage: "slider.horizontal.3") { onAction(.settings) }
             Button("Stream Details", systemImage: "waveform.path.ecg") { onAction(.details) }
+            Menu {
+                Picker("Sleep Timer", selection: Binding(get: { sleep ?? 0 },
+                                                         set: { onAction(.sleep($0 == 0 ? nil : $0)) })) {
+                    Text("Off").tag(0)
+                    ForEach(SleepTimer.minutes, id: \.self) { Text("\($0) minutes").tag($0) }
+                    Text("End of Episode").tag(SleepTimer.endOfEpisode)
+                }
+            } label: {
+                Label(sleep == nil ? "Sleep Timer" : "Sleep Timer · \(SleepTimer.label(sleep))",
+                      systemImage: sleep == nil ? "moon.zzz" : "moon.zzz.fill")
+            }
             Button("Lock Controls", systemImage: "lock.fill") { onAction(.lock) }
         } label: {
             Image(systemName: "ellipsis")

@@ -199,8 +199,20 @@ struct SearchScreen: View {
     @State private var query = ""
     @State private var results: [CatalogRow] = []
     @State private var pending = 0
+    /// What was searched for lately, newest first, one per line.
+    @AppStorage("search.recent") private var recentRaw = ""
 
     private let columns = [GridItem(.adaptive(minimum: Device.size(104)), spacing: Device.isPad ? 18 : 12)]
+
+    private var recent: [String] { recentRaw.split(separator: "\n").map(String.init) }
+
+    /// Remembers a search once it led somewhere (a result was opened, or Search was pressed).
+    private func remember(_ text: String) {
+        guard text.count >= 2 else { return }
+        var list = recent.filter { $0.caseInsensitiveCompare(text) != .orderedSame }
+        list.insert(text, at: 0)
+        recentRaw = list.prefix(8).joined(separator: "\n")
+    }
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -221,6 +233,7 @@ struct SearchScreen: View {
                                                        poster: item.poster, width: Device.size(104))
                                         }
                                         .buttonStyle(CardButtonStyle())
+                                        .simultaneousGesture(TapGesture().onEnded { remember(trimmed) })
                                     }
                                 }
                             }
@@ -248,6 +261,7 @@ struct SearchScreen: View {
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Movies, series, people")
             .autocorrectionDisabled()
+            .onSubmit(of: .search) { remember(trimmed) }
             .modifier(BrowseDestinations())
             .task(id: trimmed) { await search(trimmed) }
             .task { await feed.load() }
@@ -257,6 +271,37 @@ struct SearchScreen: View {
     /// Before typing: genres and what's popular, like the TV app's Search tab.
     @ViewBuilder
     private var idleContent: some View {
+        if !recent.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Recent Searches").font(.title3.bold()).foregroundStyle(.white)
+                    Spacer()
+                    Button("Clear") { withAnimation { recentRaw = "" } }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .padding(.horizontal, Device.margin)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(recent, id: \.self) { text in
+                            Button { query = text } label: {
+                                Label(text, systemImage: "clock.arrow.circlepath")
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 36)
+                                    .background(.white.opacity(0.12), in: Capsule())
+                                    .foregroundStyle(.white)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, Device.margin)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .padding(.top, 8)
+        }
         GenreBrowser()
             .padding(.top, 8)
         if let popular = feed.top.first(where: { $0.id == "top-movies" }) {
