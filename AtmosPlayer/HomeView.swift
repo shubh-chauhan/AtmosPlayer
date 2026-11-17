@@ -16,6 +16,15 @@ struct HomeView: View {
         (Bundle.main.object(forInfoDictionaryKey: "TestMediaBase") as? String) ?? ""
     }
 
+    /// The repo's "testmedia" release, where CI publishes the HDR test clips:
+    /// raw.githubusercontent.com/OWNER/REPO/… → github.com/OWNER/REPO/releases/download/testmedia
+    private var hdrClipsBase: URL? {
+        guard let url = URL(string: testMediaBase), url.host == "raw.githubusercontent.com" else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 2 else { return nil }
+        return URL(string: "https://github.com/\(parts[0])/\(parts[1])/releases/download/testmedia")
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -60,6 +69,18 @@ struct HomeView: View {
                         Button("Dolby Atmos test stream (audio only)") {
                             start(PlayItem(url: testURL))
                         }
+                    }
+                }
+
+                if let base = hdrClipsBase {
+                    Section {
+                        Button("HDR10 test pattern") { start(PlayItem(url: base.appendingPathComponent("hdr10-test.mkv"))) }
+                        Button("Dolby Vision test pattern") { start(PlayItem(url: base.appendingPathComponent("dolby-vision-test.mkv"))) }
+                        Button("HLG test pattern") { start(PlayItem(url: base.appendingPathComponent("hlg-test.mkv"))) }
+                    } header: {
+                        Text("HDR check")
+                    } footer: {
+                        Text("Grey patches at known brightness. With HDR working, the right-hand patches glow clearly brighter than the white text and the player's buttons; without it they all look the same white. Tap the HDR badge next to the title (or More > Stream Details): the Screen row should read \"HDR on now\". Low Power Mode turns HDR off.")
                     }
                 }
 

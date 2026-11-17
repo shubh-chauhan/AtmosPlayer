@@ -255,7 +255,7 @@ struct DebugOverlay: View {
                             ?? "\(Int(processing.sourcePeakNits)) → \(Int(processing.targetPeakNits)) nits",
                             highlight: processing.disabledReason == nil)
                     }
-                    row("Screen", screenSummary)
+                    row("Screen", screenSummary, highlight: DisplayCapabilities.headroomNow > 1.05)
                     row("Path", "\(engine.videoRoute.rawValue) · \(engine.activeVideoDecoder ?? "-")")
                 }
 

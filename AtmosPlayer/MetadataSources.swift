@@ -225,6 +225,18 @@ enum MetaResolver {
             let videos = await TVMaze.episodes(showId: show.id, imdb: ref.id)
             if !videos.isEmpty { found = found.replacing(videos: videos) }
         }
+        // No artwork anywhere: IMDb's poster, so the page isn't an empty black hero.
+        if found.poster == nil, ref.id.hasPrefix("tt"),
+           let poster = await IMDbSuggest.title(ref.id)?.poster {
+            found = StremioMeta(id: found.id, type: found.type, name: found.name, poster: poster,
+                                background: found.background ?? poster, logo: found.logo,
+                                description: found.description, releaseInfo: found.releaseInfo,
+                                imdbRating: found.imdbRating, runtime: found.runtime, genres: found.genres,
+                                videos: found.videos, cast: found.cast, directors: found.directors,
+                                writers: found.writers, awards: found.awards, country: found.country,
+                                status: found.status, released: found.released, trailerId: found.trailerId,
+                                shareURL: found.shareURL, language: found.language)
+        }
         if Task.isCancelled { return found }
         if cache.count > 200 { cache.removeAll() }
         cache[key] = found

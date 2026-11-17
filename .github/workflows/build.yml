@@ -301,3 +301,77 @@ jobs:
           name: atmos-test-mkv
           path: atmos-test.mkv
           if-no-files-found: error
+
+  hdr-test-media:
+    name: HDR test clips
+    # Synthetic test patterns (no third-party footage): grey patches at known brightness,
+    # encoded as HDR10 (PQ), HLG and Dolby Vision Profile 8.1. Published once to the
+    # "testmedia" release; the app's Links tab plays them to check HDR on the phone.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CLIPS_VERSION: "1"
+    steps:
+      - name: Skip when already published
+        id: check
+        run: |
+          notes=$(gh release view testmedia --json body -q '.body' 2>/dev/null || true)
+          if echo "$notes" | grep -q "clips v$CLIPS_VERSION)"; then echo "skip=1" >> "$GITHUB_OUTPUT"; fi
+      - name: Build HDR10 and HLG clips
+        if: steps.check.outputs.skip != '1'
+        run: |
+          set -e
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg mkvtoolnix fonts-dejavu-core
+          FONT=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+          PQ="colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400:hdr10=1:repeat-headers=1:log-level=error"
+          HLG="colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited:repeat-headers=1:log-level=error"
+          # clip OUT "a b c d" (8-bit limited luma per patch) "l1|l2|l3|l4" TITLE TRC X265PARAMS
+          clip() {
+            out=$1; values=$2; labels=$3; title=$4; trc=$5; params=$6
+            read -r a b c d <<< "$values"
+            IFS='|' read -r l1 l2 l3 l4 <<< "$labels"
+            ffmpeg -hide_banner -loglevel error -y -f lavfi -i "color=c=black:s=1920x1080:r=24:d=10,format=yuv420p" \
+              -vf "geq=lum='if(between(Y,170,770)*between(mod(X,480),40,440), if(lt(X,480),$a, if(lt(X,960),$b, if(lt(X,1440),$c,$d))), if(between(Y,860,920)*between(mod(X+N*12,1920),0,160),$d,16))':cb=128:cr=128,
+                   drawtext=fontfile=$FONT:text='$title':x=60:y=70:fontsize=44:fontcolor=0x818181,
+                   drawtext=fontfile=$FONT:text='$l1':x=80:y=790:fontsize=38:fontcolor=0x818181,
+                   drawtext=fontfile=$FONT:text='$l2':x=560:y=790:fontsize=38:fontcolor=0x818181,
+                   drawtext=fontfile=$FONT:text='$l3':x=1040:y=790:fontsize=38:fontcolor=0x818181,
+                   drawtext=fontfile=$FONT:text='$l4':x=1520:y=790:fontsize=38:fontcolor=0x818181,
+                   format=yuv420p10le" \
+              -c:v libx265 -preset medium -crf 18 -pix_fmt yuv420p10le \
+              -color_primaries bt2020 -color_trc "$trc" -colorspace bt2020nc -x265-params "$params" "$out"
+          }
+          # PQ code values for 100, 203, 400 and 1000 nits; the 100-nit patch matches the text.
+          clip hdr10-test.mkv "127 143 159 181" "100 nits|203 nits|400 nits|1000 nits" \
+            "HDR10 - patches brighter than this text means HDR is on" smpte2084 "$PQ"
+          clip dv-base.hevc "127 143 159 181" "100 nits|203 nits|400 nits|1000 nits" \
+            "Dolby Vision - patches brighter than this text means HDR is on" smpte2084 "$PQ"
+          # HLG signal at 50%, 75% (reference white), 90% and 100%.
+          clip hlg-test.mkv "126 180 213 235" "50 pct|75 pct = white|90 pct|100 pct" \
+            "HLG - patches brighter than this text means HDR is on" arib-std-b67 "$HLG"
+          ls -la hdr10-test.mkv hlg-test.mkv dv-base.hevc
+      - name: Build Dolby Vision 8.1 clip
+        if: steps.check.outputs.skip != '1'
+        continue-on-error: true
+        run: |
+          set -e
+          url=$(curl -sf https://api.github.com/repos/quietvoid/dovi_tool/releases/latest \
+            | python3 -c 'import json,sys; print([a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if "x86_64-unknown-linux-musl" in a["name"]][0])')
+          curl -sfL "$url" -o dovi.tar.gz && tar xzf dovi.tar.gz && chmod +x dovi_tool
+          printf '%s' '{"cm_version":"V40","profile":"8.1","length":240,"level6":{"max_display_mastering_luminance":1000,"min_display_mastering_luminance":1,"max_content_light_level":1000,"max_frame_average_light_level":400}}' > dv.json
+          ./dovi_tool generate -j dv.json -o RPU.bin
+          ./dovi_tool inject-rpu -i dv-base.hevc --rpu-in RPU.bin -o dv.hevc
+          mkvmerge -q -o dolby-vision-test.mkv --default-duration 0:24p dv.hevc
+          mkvinfo dolby-vision-test.mkv | grep -i -E "dolby|dovi|block addition" || true
+      - name: Publish clips
+        if: steps.check.outputs.skip != '1'
+        run: |
+          gh release view testmedia >/dev/null 2>&1 || \
+            gh release create testmedia --title "HDR test clips" --notes "Synthetic HDR test patterns." --latest=false
+          gh release upload testmedia hdr10-test.mkv hlg-test.mkv --clobber
+          if [ -f dolby-vision-test.mkv ]; then gh release upload testmedia dolby-vision-test.mkv --clobber; fi
+          gh release edit testmedia --notes "Synthetic HDR test patterns (clips v$CLIPS_VERSION): grey patches at known brightness in HDR10, HLG and Dolby Vision 8.1."
