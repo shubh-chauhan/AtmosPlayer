@@ -75,6 +75,7 @@ struct HomeView: View {
                 if let base = hdrClipsBase {
                     Section {
                         Button("HDR10 test pattern") { start(PlayItem(url: base.appendingPathComponent("hdr10-test.mkv"))) }
+                        Button("HDR10 test pattern (tags in stream only)") { start(PlayItem(url: base.appendingPathComponent("hdr10-untagged-test.mkv"))) }
                         Button("Dolby Vision test pattern") { start(PlayItem(url: base.appendingPathComponent("dolby-vision-test.mkv"))) }
                         Button("HLG test pattern") { start(PlayItem(url: base.appendingPathComponent("hlg-test.mkv"))) }
                     } header: {

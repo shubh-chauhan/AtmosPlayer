@@ -314,7 +314,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      CLIPS_VERSION: "1"
+      CLIPS_VERSION: "2"
     steps:
       - name: Skip when already published
         id: check
@@ -331,7 +331,9 @@ jobs:
           HLG="colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited:repeat-headers=1:log-level=error"
           # clip OUT "a b c d" (8-bit limited luma per patch) "l1|l2|l3|l4" TITLE TRC X265PARAMS
           clip() {
-            out=$1; values=$2; labels=$3; title=$4; trc=$5; params=$6
+            out=$1; values=$2; labels=$3; title=$4; trc=$5; params=$6; tag=$7
+            tagging=""
+            if [ "$tag" = "tag" ]; then tagging="setparams=color_primaries=bt2020:color_trc=$trc:colorspace=bt2020nc:range=tv,"; fi
             read -r a b c d <<< "$values"
             IFS='|' read -r l1 l2 l3 l4 <<< "$labels"
             ffmpeg -hide_banner -loglevel error -y -f lavfi -i "color=c=black:s=1920x1080:r=24:d=10,format=yuv420p" \
@@ -341,24 +343,38 @@ jobs:
                    drawtext=fontfile=$FONT:text='$l2':x=560:y=790:fontsize=38:fontcolor=0x818181,
                    drawtext=fontfile=$FONT:text='$l3':x=1040:y=790:fontsize=38:fontcolor=0x818181,
                    drawtext=fontfile=$FONT:text='$l4':x=1520:y=790:fontsize=38:fontcolor=0x818181,
-                   format=yuv420p10le" \
+                   ${tagging}format=yuv420p10le" \
               -c:v libx265 -preset medium -crf 18 -pix_fmt yuv420p10le \
               -color_primaries bt2020 -color_trc "$trc" -colorspace bt2020nc -x265-params "$params" "$out"
           }
           # PQ code values for 100, 203, 400 and 1000 nits; the 100-nit patch matches the text.
+          {
           clip hdr10-test.mkv "127 143 159 181" "100 nits|203 nits|400 nits|1000 nits" \
-            "HDR10 - patches brighter than this text means HDR is on" smpte2084 "$PQ"
+            "HDR10 - patches brighter than this text means HDR is on" smpte2084 "$PQ" tag
+          # The same picture with the HDR tags only inside the video stream, not in the MKV
+          # header: how many real releases are muxed.
+          clip hdr10-untagged-test.mkv "127 143 159 181" "100 nits|203 nits|400 nits|1000 nits" \
+            "HDR10 (stream tags only) - brighter patches means HDR is on" smpte2084 "$PQ"
           clip dv-base.hevc "127 143 159 181" "100 nits|203 nits|400 nits|1000 nits" \
-            "Dolby Vision - patches brighter than this text means HDR is on" smpte2084 "$PQ"
+            "Dolby Vision - patches brighter than this text means HDR is on" smpte2084 "$PQ" tag
           # HLG signal at 50%, 75% (reference white), 90% and 100%.
           clip hlg-test.mkv "126 180 213 235" "50 pct|75 pct = white|90 pct|100 pct" \
-            "HLG - patches brighter than this text means HDR is on" arib-std-b67 "$HLG"
-          ls -la hdr10-test.mkv hlg-test.mkv dv-base.hevc
+            "HLG - patches brighter than this text means HDR is on" arib-std-b67 "$HLG" tag
+          ls -la *.mkv dv-base.hevc
+          for f in hdr10-test.mkv hdr10-untagged-test.mkv hlg-test.mkv; do
+            echo "== $f"
+            ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,color_range,color_space,color_transfer,color_primaries -of compact "$f"
+            mkvinfo "$f" | grep -i -A8 "colour" | head -12 || true
+          done
+          } 2>&1 | tee clips-log.txt
       - name: Build Dolby Vision 8.1 clip
         if: steps.check.outputs.skip != '1'
         continue-on-error: true
+        shell: bash
         run: |
-          set -e
+          set -eo pipefail
+          exec > >(tee -a clips-log.txt) 2>&1
+          echo "== Dolby Vision"
           url=$(curl -sf https://api.github.com/repos/quietvoid/dovi_tool/releases/latest \
             | python3 -c 'import json,sys; print([a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if "x86_64-unknown-linux-musl" in a["name"]][0])')
           curl -sfL "$url" -o dovi.tar.gz && tar xzf dovi.tar.gz && chmod +x dovi_tool
@@ -367,11 +383,12 @@ jobs:
           ./dovi_tool inject-rpu -i dv-base.hevc --rpu-in RPU.bin -o dv.hevc
           mkvmerge -q -o dolby-vision-test.mkv --default-duration 0:24p dv.hevc
           mkvinfo dolby-vision-test.mkv | grep -i -E "dolby|dovi|block addition" || true
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,color_transfer:stream_side_data -of compact dolby-vision-test.mkv || true
       - name: Publish clips
         if: steps.check.outputs.skip != '1'
         run: |
           gh release view testmedia >/dev/null 2>&1 || \
             gh release create testmedia --title "HDR test clips" --notes "Synthetic HDR test patterns." --latest=false
-          gh release upload testmedia hdr10-test.mkv hlg-test.mkv --clobber
+          gh release upload testmedia hdr10-test.mkv hdr10-untagged-test.mkv hlg-test.mkv clips-log.txt --clobber
           if [ -f dolby-vision-test.mkv ]; then gh release upload testmedia dolby-vision-test.mkv --clobber; fi
           gh release edit testmedia --notes "Synthetic HDR test patterns (clips v$CLIPS_VERSION): grey patches at known brightness in HDR10, HLG and Dolby Vision 8.1."
