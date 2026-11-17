@@ -27,6 +27,10 @@ struct MetaDetailView: View {
     @State private var similar: [MetaPreview] = []
     /// The navigation bar fades in once the backdrop has scrolled away.
     @State private var showBar = false
+    /// Trailer preview behind the title: shown, sound on, and whether this page is on top.
+    @State private var trailerShowing = false
+    @State private var trailerMuted = true
+    @State private var onTop = true
 
     /// Every episode in watching order (regular seasons first, specials last), and the season
     /// list. Worked out once when the meta arrives, not on every scroll frame.
@@ -124,7 +128,7 @@ struct MetaDetailView: View {
             let side = max(outer.safeAreaInsets.leading, outer.safeAreaInsets.trailing)
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    hero(height: heroHeight, side: side)
+                    hero(height: heroHeight, side: side, topInset: outer.safeAreaInsets.top)
                     VStack(alignment: .leading, spacing: 30) {
                         if !wide { descriptionBlock }
                         if let meta {
@@ -181,6 +185,8 @@ struct MetaDetailView: View {
         .navigationTitle(showBar ? name : "")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .onAppear { onTop = true }
+        .onDisappear { onTop = false; trailerMuted = true }
         .task(id: meta?.id) {
             if let meta, similar.isEmpty { similar = await SimilarTitles.find(for: meta) }
         }
@@ -197,7 +203,7 @@ struct MetaDetailView: View {
 
     // MARK: Hero
 
-    private func hero(height: CGFloat, side: CGFloat) -> some View {
+    private func hero(height: CGFloat, side: CGFloat, topInset: CGFloat) -> some View {
         GeometryReader { geo in
             let minY = geo.frame(in: .scrollView).minY
             let stretch = max(minY, 0)
@@ -206,6 +212,14 @@ struct MetaDetailView: View {
                 // The backdrop scrolls a little slower than the page and fades into the wash below.
                 RemoteImage(url: background, maxPixel: 2000, placeholderSymbol: "")
                     .frame(width: geo.size.width, height: height + stretch)
+                    .overlay(alignment: .bottom) {
+                        // A fixed size, scaled on pull-down, so the video never re-lays out mid-gesture.
+                        TrailerBackdrop(youtubeId: meta?.trailerId,
+                                        active: onTop && !showBar && !starting && coordinator.current == nil,
+                                        muted: trailerMuted, delay: 1.6) { trailerShowing = $0 }
+                            .frame(width: geo.size.width, height: height)
+                            .scaleEffect((height + stretch) / max(height, 1), anchor: .bottom)
+                    }
                     .clipped()
                     .mask(LinearGradient(stops: [
                         .init(color: .black, location: 0),
@@ -234,6 +248,27 @@ struct MetaDetailView: View {
                     .padding(.bottom, wide ? 30 : 18)
             }
             .mask(Rectangle().padding(.top, -2000))
+            .overlay(alignment: .topTrailing) {
+                if trailerShowing {
+                    Button {
+                        withAnimation(.snappy) { trailerMuted.toggle() }
+                    } label: {
+                        Image(systemName: trailerMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.footnote.weight(.semibold))
+                            .contentTransition(.symbolEffect(.replace))
+                            .frame(width: 34, height: 34)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(PressScaleButtonStyle(scale: 0.88))
+                    .accessibilityLabel(trailerMuted ? "Turn trailer sound on" : "Mute trailer")
+                    .padding(.top, topInset + 50)
+                    .padding(.trailing, side + 16)
+                    .opacity(1 - min(lift / 120, 1))
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                }
+            }
+            .animation(.easeInOut(duration: 0.35), value: trailerShowing)
         }
         .frame(height: height)
     }

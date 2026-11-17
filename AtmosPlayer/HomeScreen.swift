@@ -468,6 +468,12 @@ struct HeroCarousel: View {
     /// 0…1: how far the current page's timer has run (drives the indicator).
     @State private var fill: CGFloat = 0
     @State private var cycle = 0
+    /// The page whose trailer is showing; it gets longer before moving on.
+    @State private var trailerPage: String?
+    @State private var timerPage: String?
+    /// On screen: not scrolled away, not covered by a pushed page or another tab.
+    @State private var onScreen = true
+    @State private var appeared = true
 
     private let interval: Double = 7
 
@@ -478,7 +484,12 @@ struct HeroCarousel: View {
         let page: String?
         let cycle: Int
         let paused: Bool
+        let trailer: Bool
     }
+
+    private var trailerShowing: Bool { trailerPage != nil && trailerPage == activeId }
+    /// How long a page with its trailer playing stays before the next one.
+    private let trailerInterval: Double = 28
 
     private var paused: Bool { dragging || coordinator.current != nil || scenePhase != .active }
 
@@ -488,7 +499,12 @@ struct HeroCarousel: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(items) { item in
-                        HeroCard(item: item, wide: wide, active: item.id == activeId, sideInset: sideInset) { onOpen(item) }
+                        HeroCard(item: item, wide: wide, active: item.id == activeId, sideInset: sideInset,
+                                 previewing: item.id == activeId && !paused && onScreen && appeared,
+                                 onTrailer: { showing in
+                                     if showing { trailerPage = item.id }
+                                     else if trailerPage == item.id { trailerPage = nil }
+                                 }) { onOpen(item) }
                             .frame(width: geo.size.width, height: geo.size.height)
                             .scrollTransition(.interactive, axis: .horizontal) { view, phase in
                                 view.opacity(phase.isIdentity ? 1 : 0.55)
@@ -524,21 +540,33 @@ struct HeroCarousel: View {
             }
         }
         .modifier(HeroSize(wide: wide, landscape: verticalSize == .compact))
+        .onScrollVisibilityChange(threshold: 0.35) { onScreen = $0 }
+        .onAppear { appeared = true }
+        .onDisappear { appeared = false }
         // A page that was removed (its artwork never loaded) hands over to the first one.
         .onChange(of: items.map(\.id)) { _, ids in
             if let current, !ids.contains(current) { self.current = nil }
         }
         // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
         // playing or in the background.
-        .task(id: TimerKey(page: activeId, cycle: cycle, paused: paused)) {
-            var reset = Transaction()
-            reset.disablesAnimations = true
-            withTransaction(reset) { fill = 0 }
+        .task(id: TimerKey(page: activeId, cycle: cycle, paused: paused, trailer: trailerShowing)) {
+            // The trailer starting on this page only stretches the time left: the indicator
+            // carries on from where it is instead of jumping back.
+            let stretch = trailerShowing && timerPage == activeId && !paused
+            timerPage = activeId
+            if !stretch {
+                var reset = Transaction()
+                reset.disablesAnimations = true
+                withTransaction(reset) { fill = 0 }
+            }
             guard !paused, items.count > 1 else { return }
-            try? await Task.sleep(nanoseconds: 60_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.linear(duration: interval)) { fill = 1 }
-            try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            if !stretch {
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            let duration = trailerShowing ? trailerInterval : interval
+            withAnimation(.linear(duration: duration)) { fill = 1 }
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
             let index = items.firstIndex { $0.id == activeId } ?? 0
             withAnimation(.smooth(duration: 0.85)) { current = items[(index + 1) % items.count].id }
@@ -586,6 +614,9 @@ struct HeroCard: View {
     var wide = false
     var active = true
     var sideInset: CGFloat = 0
+    /// Rested on and visible: its trailer may play.
+    var previewing = false
+    var onTrailer: (Bool) -> Void = { _ in }
     let onOpen: () -> Void
     @EnvironmentObject private var favorites: FavoritesStore
     @Environment(\.verticalSizeClass) private var verticalSize
@@ -600,6 +631,9 @@ struct HeroCard: View {
                     RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
                         .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
                         .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
+                }
+                .overlay {
+                    TrailerBackdrop(youtubeId: item.trailerId, active: previewing, onShowing: onTrailer)
                 }
                 .clipped()
 

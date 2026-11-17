@@ -238,6 +238,7 @@ struct SearchScreen: View {
                             }
                         }
                         .opacity(shownQuery == trimmed ? 1 : 0.45)
+                        .animation(.easeInOut(duration: 0.2), value: shownQuery == trimmed)
                         if results.isEmpty && people.isEmpty {
                             if pending + addonsPending > 0 || shownQuery != trimmed {
                                 HStack(spacing: 10) {

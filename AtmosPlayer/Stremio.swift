@@ -181,6 +181,11 @@ struct MetaPreview: Decodable, Identifiable, Hashable {
     let imdbRating: String?
     let genres: [String]
     let runtime: String?
+    /// YouTube id of the first trailer (Cinemeta catalogs include them).
+    let trailerId: String?
+
+    private struct TrailerStream: Decodable { let ytId: String? }
+    private struct Trailer: Decodable { let source: String?; let type: String? }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -198,6 +203,8 @@ struct MetaPreview: Decodable, Identifiable, Hashable {
         imdbRating = c.lossyString(AnyKey("imdbRating"))
         genres = c.stringArray(AnyKey("genres")) ?? c.stringArray(AnyKey("genre")) ?? []
         runtime = c.lossyString(AnyKey("runtime"))
+        trailerId = c.lossyArray(TrailerStream.self, AnyKey("trailerStreams")).compactMap(\.ytId).first
+            ?? c.lossyArray(Trailer.self, AnyKey("trailers")).first(where: { $0.type == nil || $0.type == "Trailer" })?.source
     }
 }
 

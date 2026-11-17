@@ -288,6 +288,7 @@ extension MetaPreview {
         imdbRating = nil
         genres = []
         runtime = nil
+        trailerId = nil
     }
 }
 

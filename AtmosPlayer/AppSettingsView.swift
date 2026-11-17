@@ -83,6 +83,7 @@ struct AppSettingsView: View {
     @EnvironmentObject private var history: HistoryStore
 
     @AppStorage(Prefs.skipSeconds) private var skipSeconds = 10.0
+    @AppStorage(TrailerPreviews.key) private var trailerPreviews = true
     @AppStorage(Prefs.showRemaining) private var showRemaining = true
     @AppStorage(Prefs.autoplayNext) private var autoplayNext = true
     @AppStorage(Prefs.nextCountdown) private var nextCountdown = 8
@@ -116,6 +117,14 @@ struct AppSettingsView: View {
                             ForEach([5, 8, 10, 15], id: \.self) { Text("\($0) seconds").tag($0) }
                         }
                     }
+                }
+
+                Section {
+                    Toggle("Trailer previews", isOn: $trailerPreviews)
+                } header: {
+                    Text("Browsing")
+                } footer: {
+                    Text("Muted trailers play in the big cards on Home and behind title pages after a moment. Never in Low Power Mode.")
                 }
 
                 Section {
