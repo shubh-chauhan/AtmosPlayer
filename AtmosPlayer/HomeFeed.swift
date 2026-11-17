@@ -50,6 +50,16 @@ enum Cinemeta {
         return decode(data) ?? []
     }
 
+    /// Full metadata (with every episode) for many series at once: Cinemeta's episode calendar.
+    static func calendar(ids: [String]) async -> [StremioMeta] {
+        guard !ids.isEmpty,
+              let url = URL(string: "\(base)/catalog/series/calendar-videos/calendarVideosIds=\(ids.joined(separator: ",")).json"),
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(CinemetaCalendarResponse.self, from: data) else { return [] }
+        return decoded.metas
+    }
+
     static func cachedCatalog(type: String, id: String, genre: String? = nil) -> [MetaPreview]? {
         guard let url = catalogURL(type: type, id: id, genre: genre),
               let data = HomeDiskCache.load(for: url) else { return nil }
@@ -74,6 +84,14 @@ private struct CinemetaCatalogResponse: Decodable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         metas = c.lossyArray(MetaPreview.self, AnyKey("metas"))
+    }
+}
+
+private struct CinemetaCalendarResponse: Decodable {
+    let metas: [StremioMeta]
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        metas = c.lossyArray(StremioMeta.self, AnyKey("metasDetailed"))
     }
 }
 

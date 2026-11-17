@@ -258,14 +258,12 @@ struct DownloadsSection: View {
             Section {
                 ForEach(store.entries) { entry in
                     DownloadRow(entry: entry) { open(entry) }
-                        .swipeActions(edge: .trailing) {
-                            Button("Delete", systemImage: "trash", role: .destructive) { store.remove(entry) }
-                        }
+                        .downloadActions(entry)
                 }
             } header: {
                 Text("Downloads")
             } footer: {
-                Text("\(Self.size(store.totalBytes)) on this \(Device.isPad ? "iPad" : "iPhone"). Swipe to delete. Downloads continue in the background.")
+                Text("\(Self.size(store.totalBytes)) on this \(Device.isPad ? "iPad" : "iPhone"). Swipe left or touch and hold to delete. Downloads continue in the background.")
             }
         }
     }
@@ -285,6 +283,33 @@ struct DownloadsSection: View {
 
     static func size(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+extension View {
+    /// Delete (or cancel) a download: a red swipe button, plus the same in a touch-and-hold
+    /// menu. The red is set explicitly: the app's white tint otherwise turns the swipe button
+    /// white, which made it look broken.
+    func downloadActions(_ entry: DownloadEntry) -> some View {
+        let title = entry.phase == .downloading ? "Cancel" : "Delete"
+        return self
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    withAnimation { DownloadStore.shared.remove(entry) }
+                } label: {
+                    Label(title, systemImage: entry.phase == .downloading ? "xmark" : "trash")
+                }
+                .tint(.red)
+            }
+            .contextMenu {
+                if entry.phase == .failed {
+                    Button("Retry", systemImage: "arrow.clockwise") { DownloadStore.shared.retry(entry) }
+                }
+                Button(entry.phase == .downloading ? "Cancel Download" : "Delete Download",
+                       systemImage: "trash", role: .destructive) {
+                    withAnimation { DownloadStore.shared.remove(entry) }
+                }
+            }
     }
 }
 

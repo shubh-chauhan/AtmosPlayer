@@ -98,9 +98,7 @@ struct StreamsView: View {
                             downloads.retry(saved)
                         }
                     }
-                    .swipeActions(edge: .trailing) {
-                        Button("Delete", systemImage: "trash", role: .destructive) { downloads.remove(saved) }
-                    }
+                    .downloadActions(saved)
                 }
             }
 

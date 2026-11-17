@@ -11,6 +11,7 @@ struct HomeScreen: View {
     @EnvironmentObject private var account: StremioAccount
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @ObservedObject private var feed = HomeFeed.shared
+    @ObservedObject private var calendar = EpisodeCalendar.shared
 
     @State private var path = NavigationPath()
     @State private var startingId: String?
@@ -33,6 +34,17 @@ struct HomeScreen: View {
                 LazyVStack(alignment: .leading, spacing: 32) {
                     continueWatching
 
+                    if !calendar.fresh.isEmpty {
+                        Shelf(title: "New Episodes", spacing: 14) {
+                            ForEach(calendar.fresh) { item in
+                                NavigationLink(value: item.series) {
+                                    CalendarEpisodeCard(item: item, upcoming: false)
+                                }
+                                .buttonStyle(CardButtonStyle())
+                            }
+                        }
+                    }
+
                     ForEach(feed.top.prefix(2)) { section in
                         HomeSectionView(section: section)
                     }
@@ -54,6 +66,17 @@ struct HomeScreen: View {
 
                     if let suggestion = feed.suggestion {
                         HomeSectionView(section: suggestion)
+                    }
+
+                    if !calendar.upcoming.isEmpty {
+                        Shelf(title: "Coming Soon to Your Shows", spacing: 14) {
+                            ForEach(calendar.upcoming) { item in
+                                NavigationLink(value: item.series) {
+                                    CalendarEpisodeCard(item: item, upcoming: true)
+                                }
+                                .buttonStyle(CardButtonStyle())
+                            }
+                        }
                     }
 
                     if !feed.isEmpty {
@@ -105,6 +128,10 @@ struct HomeScreen: View {
             .task(id: watch.entries.first?.ref.metaId) {
                 await feed.loadSuggestion(from: watch.entries.first)
             }
+            // The shows you follow: refreshed when that list changes.
+            .task(id: followedKey) {
+                await calendar.load(series: followed)
+            }
             .task(id: coordinator.pendingResume) {
                 guard let id = coordinator.pendingResume else { return }
                 coordinator.pendingResume = nil
@@ -125,6 +152,19 @@ struct HomeScreen: View {
                 }
             }
         }
+    }
+
+    /// Series in My List, the Stremio library and Continue Watching.
+    private var followed: [MetaRef] {
+        let watching = watch.entries.map {
+            MetaRef(id: $0.ref.metaId, type: $0.ref.type, name: $0.ref.name, poster: $0.ref.poster,
+                    background: $0.ref.background)
+        }
+        return favorites.items + account.library + watching
+    }
+
+    private var followedKey: String {
+        followed.filter { $0.type == "series" }.map(\.id).sorted().joined(separator: ",")
     }
 
     // MARK: Continue Watching
@@ -742,6 +782,8 @@ struct GenreBrowser: View {
 struct CatalogGridScreen: View {
     let route: CatalogRoute
     @State private var type: String
+    /// Cinemeta's "top" (popular now) or "imdbRating" (best rated) list for the same genre.
+    @State private var catalog: String
     @State private var items: [MetaPreview] = []
     @State private var loading = false
     @State private var exhausted = false
@@ -751,7 +793,16 @@ struct CatalogGridScreen: View {
     init(route: CatalogRoute) {
         self.route = route
         _type = State(initialValue: route.type)
+        _catalog = State(initialValue: route.catalogId)
     }
+
+    private struct LoadKey: Equatable {
+        let type: String
+        let catalog: String
+    }
+
+    /// Genre pages can sort by popularity or rating; "New" and year lists cannot.
+    private var sortable: Bool { route.catalogId == "top" || route.catalogId == "imdbRating" }
 
     var body: some View {
         ScrollView {
@@ -760,6 +811,13 @@ struct CatalogGridScreen: View {
                     Picker("Type", selection: $type) {
                         Text("Movies").tag("movie")
                         Text("Series").tag("series")
+                    }
+                    .pickerStyle(.segmented)
+                }
+                if sortable {
+                    Picker("Sort", selection: $catalog) {
+                        Text("Popular").tag("top")
+                        Text("Top Rated").tag("imdbRating")
                     }
                     .pickerStyle(.segmented)
                 }
@@ -788,7 +846,7 @@ struct CatalogGridScreen: View {
         .scrollIndicators(.hidden)
         .navigationTitle(route.title)
         .navigationBarTitleDisplayMode(.large)
-        .task(id: type) {
+        .task(id: LoadKey(type: type, catalog: catalog)) {
             items = []
             exhausted = false
             await loadMore()
@@ -800,8 +858,9 @@ struct CatalogGridScreen: View {
         loading = true
         defer { loading = false }
         let wanted = type
-        let page = await Cinemeta.catalog(type: wanted, id: route.catalogId, genre: route.genre, skip: items.count)
-        guard wanted == type else { return }
+        let list = catalog
+        let page = await Cinemeta.catalog(type: wanted, id: list, genre: route.genre, skip: items.count)
+        guard wanted == type, list == catalog else { return }
         let known = Set(items.map(\.id))
         let fresh = page.filter { !known.contains($0.id) && $0.poster != nil }
         if fresh.isEmpty { exhausted = true }
