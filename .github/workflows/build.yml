@@ -38,7 +38,9 @@ jobs:
           bash EngineBundle/apply-patches.sh build/SourcePackages/checkouts/AetherEngine
 
       - name: Build (no code signing)
+        shell: bash
         run: |
+          set -o pipefail
           xcodebuild build \
             -project AtmosPlayer.xcodeproj \
             -scheme AtmosPlayer \
@@ -52,7 +54,14 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             MARKETING_VERSION="0.1.${{ github.run_number }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
-            TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia"
+            TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia" \
+            2>&1 | tee build.log
+
+      - name: Show compile errors
+        # As annotations, so they can be read on the run's page without opening the log.
+        if: failure()
+        run: |
+          grep -E "error:" build.log | sort -u | head -25 | while IFS= read -r line; do echo "::error::$line"; done
 
       - name: Check the engine patch is in the app
         run: |
