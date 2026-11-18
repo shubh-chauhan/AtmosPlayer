@@ -518,8 +518,8 @@ struct HeroCarousel: View {
                 LazyHStack(spacing: 0) {
                     ForEach(items) { item in
                         HeroCard(item: item, wide: wide, active: item.id == activeId, sideInset: sideInset,
-                                 stretch: item.id == activeId ? pull.stretch : 0,
                                  previewing: item.id == activeId && !paused && onScreen && appeared,
+                                 stretch: item.id == activeId ? pull.stretch : 0,
                                  onTrailer: { showing in
                                      if showing { trailerPage = item.id }
                                      else if trailerPage == item.id { trailerPage = nil }
