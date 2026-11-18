@@ -223,6 +223,7 @@ jobs:
           shot stremio 8
           shot search 8
           shot search-results 14
+          shot home-trailer 30
           shot detail-fallback 16
           shot home-landscape 20
           shot detail-landscape 20
