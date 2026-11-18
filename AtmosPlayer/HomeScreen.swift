@@ -15,6 +15,7 @@ struct HomeScreen: View {
 
     @State private var path = NavigationPath()
     @State private var startingId: String?
+    @State private var pull = HeroPull()
 
     private var showsHero: Bool { !feed.hero.isEmpty }
 
@@ -26,7 +27,7 @@ struct HomeScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if showsHero {
-                        HeroCarousel(items: feed.hero, sideInset: side) { open($0) }
+                        HeroCarousel(items: feed.hero, sideInset: side, pull: pull) { open($0) }
                             .padding(.bottom, 26)
                     } else if feed.loading {
                         HomeSkeleton()
@@ -118,6 +119,13 @@ struct HomeScreen: View {
             }
             .background(Color.black)
             .scrollIndicators(.hidden)
+            // How far Home is pulled down past its top: the hero's artwork grows into that room
+            // instead of leaving black above it.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                max(-(geometry.contentOffset.y + geometry.contentInsets.top), 0)
+            } action: { _, stretch in
+                pull.stretch = stretch
+            }
             .ignoresSafeArea(edges: showsHero ? [.top, .horizontal] : .horizontal)
             }
             .background(Color.black)
@@ -451,12 +459,20 @@ private struct ProgressBar: View {
 
 // MARK: - Hero
 
+/// How far Home is pulled past its top. A reference the carousel reads, so the pull redraws the
+/// hero alone and not every shelf on the page.
+@Observable
+final class HeroPull {
+    var stretch: CGFloat = 0
+}
+
 /// The featured carousel at the top of Home: one title at a time, full bleed, moving on by
 /// itself with a progress line under the current page (like the TV app). Swiping pauses it.
 struct HeroCarousel: View {
     let items: [MetaPreview]
     /// Room for the notch in landscape (the carousel itself runs edge to edge).
     var sideInset: CGFloat = 0
+    var pull = HeroPull()
     let onOpen: (MetaPreview) -> Void
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @Environment(\.verticalSizeClass) private var verticalSize
@@ -491,7 +507,9 @@ struct HeroCarousel: View {
     /// How long a page with its trailer playing stays before the next one.
     private let trailerInterval: Double = 28
 
-    private var paused: Bool { dragging || coordinator.current != nil || scenePhase != .active }
+    private var paused: Bool {
+        dragging || coordinator.current != nil || scenePhase != .active || TrailerPreviews.diagnosing
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -500,6 +518,7 @@ struct HeroCarousel: View {
                 LazyHStack(spacing: 0) {
                     ForEach(items) { item in
                         HeroCard(item: item, wide: wide, active: item.id == activeId, sideInset: sideInset,
+                                 stretch: item.id == activeId ? pull.stretch : 0,
                                  previewing: item.id == activeId && !paused && onScreen && appeared,
                                  onTrailer: { showing in
                                      if showing { trailerPage = item.id }
@@ -516,6 +535,8 @@ struct HeroCarousel: View {
             }
             .scrollTargetBehavior(.paging)
             .scrollIndicators(.hidden)
+            // The current page's artwork grows above the carousel on pull-down.
+            .scrollClipDisabled()
             .scrollPosition(id: $current)
             // Pages are exactly the screen's width: no extra inset for the notch, which would
             // shift every page sideways in landscape.
@@ -616,6 +637,8 @@ struct HeroCard: View {
     var sideInset: CGFloat = 0
     /// Rested on and visible: its trailer may play.
     var previewing = false
+    /// Points Home is pulled down past its top; the artwork scales up from the bottom to fill it.
+    var stretch: CGFloat = 0
     var onTrailer: (Bool) -> Void = { _ in }
     let onOpen: () -> Void
     @EnvironmentObject private var favorites: FavoritesStore
@@ -625,28 +648,35 @@ struct HeroCard: View {
 
     var body: some View {
         ZStack(alignment: wide ? .bottomLeading : .bottom) {
-            // A slow push-in on the page you're looking at.
-            Color.clear
-                .overlay {
-                    RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
-                        .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
-                        .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
-                }
-                .overlay {
-                    TrailerBackdrop(youtubeId: item.trailerId, active: previewing, onShowing: onTrailer)
-                }
-                .clipped()
+            // Artwork, trailer and their shading move as one picture: on pull-down it scales up
+            // from the bottom edge (a transform, so the trailer never re-lays out mid-gesture).
+            ZStack {
+                // A slow push-in on the page you're looking at.
+                Color.clear
+                    .overlay {
+                        RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
+                            .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
+                            .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
+                    }
+                    .overlay {
+                        TrailerBackdrop(youtubeId: item.trailerId, active: previewing, onShowing: onTrailer)
+                    }
+                    .clipped()
 
-            LinearGradient(stops: [
-                .init(color: .black.opacity(0.45), location: 0),
-                .init(color: .clear, location: 0.18),
-                .init(color: .clear, location: wide ? 0.5 : 0.38),
-                .init(color: .black.opacity(0.65), location: wide ? 0.82 : 0.66),
-                .init(color: .black, location: 1),
-            ], startPoint: .top, endPoint: .bottom)
-            if wide {
-                LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0.35), .clear],
-                               startPoint: .leading, endPoint: UnitPoint(x: 0.7, y: 0.5))
+                LinearGradient(stops: [
+                    .init(color: .black.opacity(0.45), location: 0),
+                    .init(color: .clear, location: 0.18),
+                    .init(color: .clear, location: wide ? 0.5 : 0.38),
+                    .init(color: .black.opacity(0.65), location: wide ? 0.82 : 0.66),
+                    .init(color: .black, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+                if wide {
+                    LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0.35), .clear],
+                                   startPoint: .leading, endPoint: UnitPoint(x: 0.7, y: 0.5))
+                }
+            }
+            .visualEffect { [stretch] content, proxy in
+                content.scaleEffect((proxy.size.height + stretch) / max(proxy.size.height, 1), anchor: .bottom)
             }
 
             content

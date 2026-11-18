@@ -35,8 +35,9 @@ struct TrailerBackdrop: View {
     /// The card is the one being looked at (front page, nothing covering it).
     let active: Bool
     var muted = true
-    /// How long to rest on the card before the trailer starts loading.
-    var delay: Double = 2.2
+    /// How long to rest on the card before the trailer starts loading. The player loads hidden
+    /// and only fades in once the video is actually moving, so this can be short.
+    var delay: Double = 0.8
     /// Reports when the trailer is visible (so the card can stop its own motion or timer).
     var onShowing: (Bool) -> Void = { _ in }
 
@@ -60,13 +61,13 @@ struct TrailerBackdrop: View {
             if armed, let youtubeId {
                 // Fill the card the way artwork does (crop, never letterbox), slightly
                 // oversized so YouTube's title bar and logo fall outside the card.
-                let size = Self.fill(geo.size, scale: 1.22)
+                let size = Self.fill(geo.size, scale: 1.3)
                 YouTubeLoop(videoId: youtubeId, muted: muted, onStatus: { status = $0 }) { playing in
-                    // A short wait after it starts, so the player's own overlays are gone.
+                    // A beat after it starts, so the first frames (and the player's title) are past.
                     Task { @MainActor in
-                        if playing { try? await Task.sleep(nanoseconds: 900_000_000) }
+                        if playing { try? await Task.sleep(nanoseconds: 450_000_000) }
                         guard armed else { return }
-                        withAnimation(.easeInOut(duration: playing ? 0.9 : 0.5)) { showing = playing }
+                        withAnimation(.easeInOut(duration: playing ? 0.7 : 0.45)) { showing = playing }
                     }
                 }
                 .frame(width: size.width, height: size.height)
@@ -137,6 +138,9 @@ private struct YouTubeLoop: UIViewRepresentable {
         web.scrollView.backgroundColor = .clear
         web.scrollView.isScrollEnabled = false
         web.isUserInteractionEnabled = false
+        // YouTube's phone player draws its play/pause/skip buttons over the video whatever the
+        // embed asks for; the desktop player honours controls=0 and shows only the picture.
+        web.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         web.loadHTMLString(Self.page(videoId, muted: muted), baseURL: URL(string: TrailerPreviews.origin + "/"))
         context.coordinator.muted = muted
         return web

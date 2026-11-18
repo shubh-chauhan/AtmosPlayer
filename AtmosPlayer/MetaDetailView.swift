@@ -182,6 +182,21 @@ struct MetaDetailView: View {
         }
         .background(Color.black)
         .toolbarBackground(showBar ? .visible : .hidden, for: .navigationBar)
+        .toolbar {
+            // In the navigation bar, level with the back button, while a trailer is playing.
+            if trailerShowing && !showBar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        trailerMuted.toggle()
+                    } label: {
+                        Image(systemName: trailerMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .accessibilityLabel(trailerMuted ? "Turn trailer sound on" : "Mute trailer")
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: trailerShowing)
         .navigationTitle(showBar ? name : "")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
@@ -208,6 +223,9 @@ struct MetaDetailView: View {
             let minY = geo.frame(in: .scrollView).minY
             let stretch = max(minY, 0)
             let lift = max(-minY, 0)
+            // On pull-down the hero grows upward: its frame is `stretch` taller and lifted by as
+            // much, so the title and buttons stay put above the page and the artwork, trailer and
+            // shading all fill the room together (no seam where the top shade used to stop).
             ZStack(alignment: wide ? .bottomLeading : .bottom) {
                 // The backdrop scrolls a little slower than the page and fades into the wash below.
                 RemoteImage(url: background, maxPixel: 2000, placeholderSymbol: "")
@@ -216,7 +234,7 @@ struct MetaDetailView: View {
                         // A fixed size, scaled on pull-down, so the video never re-lays out mid-gesture.
                         TrailerBackdrop(youtubeId: meta?.trailerId,
                                         active: onTop && !showBar && !starting && coordinator.current == nil,
-                                        muted: trailerMuted, delay: 1.6) { trailerShowing = $0 }
+                                        muted: trailerMuted, delay: 0.5) { trailerShowing = $0 }
                             .frame(width: geo.size.width, height: height)
                             .scaleEffect((height + stretch) / max(height, 1), anchor: .bottom)
                     }
@@ -226,7 +244,7 @@ struct MetaDetailView: View {
                         .init(color: .black, location: wide ? 0.7 : 0.55),
                         .init(color: .clear, location: 1),
                     ], startPoint: .top, endPoint: .bottom))
-                    .offset(y: -stretch + lift * 0.4)
+                    .offset(y: lift * 0.4)
 
                 LinearGradient(stops: [
                     .init(color: .black.opacity(0.35), location: 0),
@@ -247,28 +265,10 @@ struct MetaDetailView: View {
                     .padding(.horizontal, wide ? side + 36 : 20)
                     .padding(.bottom, wide ? 30 : 18)
             }
+            .frame(width: geo.size.width, height: height + stretch)
+            // Nothing spills below the hero (the backdrop drifts down as the page scrolls).
             .mask(Rectangle().padding(.top, -2000))
-            .overlay(alignment: .topTrailing) {
-                if trailerShowing {
-                    Button {
-                        withAnimation(.snappy) { trailerMuted.toggle() }
-                    } label: {
-                        Image(systemName: trailerMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .font(.footnote.weight(.semibold))
-                            .contentTransition(.symbolEffect(.replace))
-                            .frame(width: 34, height: 34)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(PressScaleButtonStyle(scale: 0.88))
-                    .accessibilityLabel(trailerMuted ? "Turn trailer sound on" : "Mute trailer")
-                    .padding(.top, topInset + 50)
-                    .padding(.trailing, side + 16)
-                    .opacity(1 - min(lift / 120, 1))
-                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
-                }
-            }
-            .animation(.easeInOut(duration: 0.35), value: trailerShowing)
+            .offset(y: -stretch)
         }
         .frame(height: height)
     }
@@ -675,6 +675,25 @@ struct MetaDetailView: View {
         } else if let first = seasons.first {
             season = first
         }
+
+        // Fill what Cinemeta left out (synopsis, genres, cast, episode stills…) from the other
+        // sources, after the page is already showing.
+        guard let richer = await MetaResolver.enrichIfThin(found, ref: ref, addons: addons.addons),
+              !Task.isCancelled else { return }
+        if richer.videos.count != found.videos.count {
+            let ordered = EpisodeQueue.ordered(richer.videos)
+            var seen: [Int] = []
+            for video in ordered {
+                if let s = video.season, !seen.contains(s) { seen.append(s) }
+            }
+            orderedVideos = ordered
+            seasons = seen
+            addonVideoIds = richer.videos.map(\.id)
+            if !seen.contains(season), let first = seen.first { season = first }
+        } else {
+            orderedVideos = EpisodeQueue.ordered(richer.videos)
+        }
+        withAnimation(.easeOut(duration: 0.3)) { meta = richer }
     }
 }
 

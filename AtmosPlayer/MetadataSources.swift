@@ -213,6 +213,20 @@ enum IMDbSuggest {
 @MainActor
 enum MetaResolver {
     private static var cache: [String: StremioMeta] = [:]
+    private static var enriched: Set<String> = []
+
+    /// Cinemeta is thin on some titles (no synopsis, genres, runtime or cast, no episode stills).
+    /// After the page is up, this asks the other sources at once and fills only what is missing,
+    /// so every title page shows the same set of details. Nil when there was nothing to add.
+    static func enrichIfThin(_ meta: StremioMeta, ref: MetaRef, addons: [InstalledAddon]) async -> StremioMeta? {
+        let key = "\(ref.type)/\(ref.id)"
+        guard meta.isThin, !enriched.contains(key) else { return nil }
+        let richer = await enrich(meta, ref: ref, addons: addons)
+        guard !Task.isCancelled else { return nil }
+        enriched.insert(key)
+        cache[key] = richer
+        return richer
+    }
 
     static func resolve(_ ref: MetaRef, addons: [InstalledAddon]) async -> StremioMeta? {
         let key = "\(ref.type)/\(ref.id)"
@@ -226,7 +240,7 @@ enum MetaResolver {
             if !videos.isEmpty { found = found.replacing(videos: videos) }
         }
         // No artwork anywhere: IMDb's poster, so the page isn't an empty black hero.
-        if found.poster == nil, ref.id.hasPrefix("tt"),
+        if found.poster == nil, found.background == nil, ref.id.hasPrefix("tt"),
            let poster = await IMDbSuggest.title(ref.id)?.poster {
             found = StremioMeta(id: found.id, type: found.type, name: found.name, poster: poster,
                                 background: found.background ?? poster, logo: found.logo,
@@ -243,6 +257,46 @@ enum MetaResolver {
         return found
     }
 
+    /// The other sources' answers for `meta`, merged under it in order of trust: your meta
+    /// addons, TVmaze (series), then IMDb's basics.
+    private static func enrich(_ meta: StremioMeta, ref: MetaRef, addons: [InstalledAddon]) async -> StremioMeta {
+        let imdb = ref.id.hasPrefix("tt")
+        let series = meta.type == "series"
+        async let fromAddons = addonMetas(ref, addons: addons, timeout: 8)
+        async let fromTVMaze: StremioMeta? = imdb && series ? TVMaze.meta(imdb: ref.id, fallback: ref) : nil
+        async let fromIMDb: MetaPreview? = imdb ? IMDbSuggest.title(ref.id) : nil
+        var merged = meta
+        for other in await fromAddons { merged = merged.filling(from: other) }
+        if let tv = await fromTVMaze { merged = merged.filling(from: tv) }
+        if let basic = await fromIMDb {
+            let cast = (basic.description ?? "").split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            merged = merged.filling(from: StremioMeta(id: meta.id, type: meta.type, name: basic.name,
+                                                      poster: basic.poster, releaseInfo: basic.releaseInfo,
+                                                      cast: cast))
+        }
+        return merged
+    }
+
+    /// Details from your addons that serve this kind of id (Cinemeta aside), in your order.
+    private static func addonMetas(_ ref: MetaRef, addons: [InstalledAddon], timeout: TimeInterval) async -> [StremioMeta] {
+        let candidates = addons.filter {
+            !$0.transportURL.contains("cinemeta") && $0.manifest.supports("meta", type: ref.type, id: ref.id)
+        }
+        guard !candidates.isEmpty else { return [] }
+        let answers = await withTaskGroup(of: (Int, StremioMeta?).self) { group in
+            for (index, addon) in candidates.enumerated() {
+                group.addTask {
+                    (index, try? await StremioClient.meta(addon, type: ref.type, id: ref.id, timeout: timeout))
+                }
+            }
+            var out: [Int: StremioMeta] = [:]
+            for await (index, meta) in group { if let meta { out[index] = meta } }
+            return out
+        }
+        return answers.keys.sorted().compactMap { answers[$0] }
+    }
+
     private static func lookup(_ ref: MetaRef, addons: [InstalledAddon]) async -> StremioMeta? {
         let imdb = ref.id.hasPrefix("tt")
         if imdb {
@@ -255,22 +309,7 @@ enum MetaResolver {
             }
         }
         // Your addons that serve details for this kind of id, in your order, all asked at once.
-        let candidates = addons.filter {
-            !$0.transportURL.contains("cinemeta") && $0.manifest.supports("meta", type: ref.type, id: ref.id)
-        }
-        if !candidates.isEmpty {
-            let answers = await withTaskGroup(of: (Int, StremioMeta?).self) { group in
-                for (index, addon) in candidates.enumerated() {
-                    group.addTask {
-                        (index, try? await StremioClient.meta(addon, type: ref.type, id: ref.id, timeout: 12))
-                    }
-                }
-                var out: [Int: StremioMeta] = [:]
-                for await (index, meta) in group { if let meta { out[index] = meta } }
-                return out
-            }
-            if let first = answers.keys.sorted().first, let meta = answers[first] { return meta }
-        }
+        if let meta = await addonMetas(ref, addons: addons, timeout: 12).first { return meta }
         guard imdb else { return nil }
         if ref.type != "movie", let meta = await TVMaze.meta(imdb: ref.id, fallback: ref) { return meta }
         // Last resort: the basics from IMDb, enough to show the page and look for streams.
@@ -347,6 +386,66 @@ extension StremioMeta {
         self.trailerId = trailerId
         self.shareURL = shareURL
         self.language = language
+    }
+
+    /// Missing any of the details a title page shows.
+    var isThin: Bool {
+        func empty(_ value: String?) -> Bool { (value ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+        if empty(description) || genres.isEmpty || empty(runtime) || cast.isEmpty
+            || empty(background) || empty(releaseInfo) || trailerId == nil { return true }
+        if type == "series", !videos.isEmpty {
+            let bare = videos.filter { empty($0.thumbnail) || empty($0.overview) }.count
+            return bare * 3 > videos.count
+        }
+        return false
+    }
+
+    /// This meta with every empty field taken from `other`. Episodes are matched by season and
+    /// number: missing stills, synopses, titles and dates are filled, and episodes `other` lists
+    /// that this one doesn't are added.
+    func filling(from other: StremioMeta) -> StremioMeta {
+        func pick(_ mine: String?, _ theirs: String?) -> String? {
+            (mine ?? "").trimmingCharacters(in: .whitespaces).isEmpty ? (theirs ?? mine) : mine
+        }
+        var episodes = videos
+        if !other.videos.isEmpty {
+            if episodes.isEmpty {
+                episodes = other.videos
+            } else {
+                var byCode: [String: Video] = [:]
+                for video in other.videos { if let code = video.code { byCode[code] = video } }
+                var seen = Set<String>()
+                episodes = episodes.map { video in
+                    guard let code = video.code, let match = byCode[code] else { return video }
+                    seen.insert(code)
+                    return Video(id: video.id, title: pick(video.title, match.title), season: video.season,
+                                 episode: video.episode, released: pick(video.released, match.released),
+                                 thumbnail: pick(video.thumbnail, match.thumbnail),
+                                 overview: pick(video.overview, match.overview),
+                                 rating: pick(video.rating, match.rating))
+                }
+                // Only add episodes when the ids line up with this title's ("tt…:s:e").
+                if other.id == id {
+                    episodes += other.videos.filter { video in
+                        guard let code = video.code, (video.season ?? 0) > 0 else { return false }
+                        return !seen.contains(code) && !videos.contains { $0.code == code }
+                    }
+                }
+            }
+        }
+        return StremioMeta(id: id, type: type, name: name, poster: pick(poster, other.poster),
+                           background: pick(background, other.background), logo: pick(logo, other.logo),
+                           description: pick(description, other.description),
+                           releaseInfo: pick(releaseInfo, other.releaseInfo),
+                           imdbRating: pick(imdbRating, other.imdbRating), runtime: pick(runtime, other.runtime),
+                           genres: genres.isEmpty ? other.genres : genres, videos: episodes,
+                           cast: cast.isEmpty ? other.cast : cast,
+                           directors: directors.isEmpty ? other.directors : directors,
+                           writers: writers.isEmpty ? other.writers : writers,
+                           awards: pick(awards, other.awards), country: pick(country, other.country),
+                           status: pick(status, other.status), released: pick(released, other.released),
+                           trailerId: trailerId ?? other.trailerId, shareURL: shareURL ?? other.shareURL,
+                           language: pick(language, other.language))
     }
 
     func replacing(videos: [Video]) -> StremioMeta {
