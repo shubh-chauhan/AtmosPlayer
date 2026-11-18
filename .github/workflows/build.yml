@@ -30,6 +30,13 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
+      - name: Resolve packages and patch the engine
+        # EngineBundle/patches holds engine fixes not yet upstream (HDR read from the HEVC
+        # parameter sets when the container has no colour tags).
+        run: |
+          xcodebuild -resolvePackageDependencies -project AtmosPlayer.xcodeproj -scheme AtmosPlayer -derivedDataPath build
+          bash EngineBundle/apply-patches.sh build/SourcePackages/checkouts/AetherEngine
+
       - name: Build (no code signing)
         run: |
           xcodebuild build \
@@ -38,6 +45,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            -skipPackageUpdates \
             -quiet \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -45,6 +53,11 @@ jobs:
             MARKETING_VERSION="0.1.${{ github.run_number }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia"
+
+      - name: Check the engine patch is in the app
+        run: |
+          grep -rlq "from the HEVC parameter sets" build/Build/Products/Release-iphoneos/AtmosPlayer.app \
+            || { echo "::error::the engine patch did not make it into the build"; exit 1; }
 
       - name: Ad-hoc sign with entitlements
         # The build is unsigned; signing it ad hoc records the App Group the widget shares with the
@@ -161,6 +174,13 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
+      - name: Resolve packages and patch the engine
+        # EngineBundle/patches holds engine fixes not yet upstream (HDR read from the HEVC
+        # parameter sets when the container has no colour tags).
+        run: |
+          xcodebuild -resolvePackageDependencies -project AtmosPlayer.xcodeproj -scheme AtmosPlayer -derivedDataPath build
+          bash EngineBundle/apply-patches.sh build/SourcePackages/checkouts/AetherEngine
+
       - name: Build for the simulator
         run: |
           xcodebuild build \
@@ -170,6 +190,7 @@ jobs:
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build \
+            -skipPackageUpdates \
             -quiet \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -392,3 +413,40 @@ jobs:
           gh release upload testmedia hdr10-test.mkv hdr10-untagged-test.mkv hlg-test.mkv clips-log.txt --clobber
           if [ -f dolby-vision-test.mkv ]; then gh release upload testmedia dolby-vision-test.mkv --clobber; fi
           gh release edit testmedia --notes "Synthetic HDR test patterns (clips v$CLIPS_VERSION): grey patches at known brightness in HDR10, HLG and Dolby Vision 8.1."
+
+  engine-hdr-probe:
+    name: Engine HDR detection
+    # Builds the engine's own probe tool with EngineBundle/patches applied and checks that the
+    # test clips are read as the HDR they are, including HDR10 tagged only inside the video stream.
+    needs: hdr-test-media
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build aetherctl with the patches
+        run: |
+          tag=$(git ls-remote --tags --refs https://github.com/superuser404notfound/AetherEngine \
+            | sed 's#.*refs/tags/##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          echo "AetherEngine $tag"
+          git clone -q --depth 1 --branch "$tag" https://github.com/superuser404notfound/AetherEngine engine
+          bash EngineBundle/apply-patches.sh engine
+          swift build --package-path engine --product aetherctl
+
+      - name: Probe the HDR clips
+        run: |
+          base="https://github.com/${{ github.repository }}/releases/download/testmedia"
+          bin="$(swift build --package-path engine --show-bin-path)/aetherctl"
+          check() {
+            f=$1; want=$2
+            echo "== $f (want $want)"
+            "$bin" probe "$base/$f" > "probe-$f.txt" 2>&1 || true
+            grep -E "format:|colour:|HEVC parameter sets|HDR/DV" "probe-$f.txt" || cat "probe-$f.txt"
+            grep -qiE "format: +$want$" "probe-$f.txt" || { echo "::error::$f read as something other than $want"; fail=1; }
+          }
+          fail=0
+          check hdr10-untagged-test.mkv hdr10
+          check hdr10-test.mkv hdr10
+          check hlg-test.mkv hlg
+          check dolby-vision-test.mkv dolbyVision
+          exit $fail

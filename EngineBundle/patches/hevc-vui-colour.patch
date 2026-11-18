@@ -1,0 +1,71 @@
+diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
+index 30fd313..593fbbd 100644
+--- a/Sources/AetherEngine/Demuxer/Demuxer.swift
++++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
+@@ -796,6 +796,7 @@ public final class Demuxer: @unchecked Sendable {
+         refreshStreamTableLocked()
+         accessLock.unlock()
+         reportOpenStage(.streamsProbed)
++        backfillColorFromParameterSets()
+         promoteAlternativeTransferHLG()
+     }
+ 
+@@ -1145,6 +1146,7 @@ public final class Demuxer: @unchecked Sendable {
+         // the cold-start state that only exists to serve them. Deliberately after probeStreams:
+         // find_stream_info is where the trailing-index ping-pong lives, not avformat_open_input.
+         avioProvider?.markOpenPhaseFinished()
++        backfillColorFromParameterSets()
+         promoteAlternativeTransferHLG()
+     }
+ 
+@@ -1770,6 +1772,50 @@ public final class Demuxer: @unchecked Sendable {
+             : String(format: "0x%08X", tag)
+     }
+ 
++    /// An HEVC stream whose container carries no colour description (no Matroska `Colour` element, no
++    /// MP4 `colr`) still declares one in its SPS VUI, but `find_stream_info` leaves `codecpar` empty
++    /// whenever it gets the stream's parameters without opening a decoder. Format detection reads
++    /// `codecpar`, so a PQ stream muxed that way was classified SDR and its code values were shown raw.
++    /// Opening a decoder on the extradata alone parses the parameter sets (the HEVC decoder's init
++    /// exports the first SPS's VUI onto the context) without reading a packet. Only the fields the
++    /// container left open are filled; a value the container declared is kept.
++    private func backfillColorFromParameterSets() {
++        let index = videoStreamIndex
++        _ = withStream(at: index) { stream in
++            guard stream.pointee.discard != AVDISCARD_ALL,
++                  let par = stream.pointee.codecpar,
++                  par.pointee.codec_id == AV_CODEC_ID_HEVC,
++                  par.pointee.color_trc == AVCOL_TRC_UNSPECIFIED
++                    || par.pointee.color_primaries == AVCOL_PRI_UNSPECIFIED
++                    || par.pointee.color_space == AVCOL_SPC_UNSPECIFIED,
++                  par.pointee.extradata != nil, par.pointee.extradata_size > 0,
++                  let codec = avcodec_find_decoder(AV_CODEC_ID_HEVC) else { return }
++            var context: UnsafeMutablePointer<AVCodecContext>? = avcodec_alloc_context3(codec)
++            defer { avcodec_free_context(&context) }
++            guard let ctx = context, avcodec_parameters_to_context(ctx, par) >= 0 else { return }
++            ctx.pointee.thread_count = 1
++            guard avcodec_open2(ctx, codec, nil) >= 0 else { return }
++            let declared = ColorDescription(codecpar: UnsafePointer(par))
++            let fromVUI = ColorDescription(primaries: ctx.pointee.color_primaries,
++                                           transfer: ctx.pointee.color_trc,
++                                           matrix: ctx.pointee.colorspace,
++                                           range: ctx.pointee.color_range)
++            let resolved = ColorDescription.resolved(bitstream: declared, container: fromVUI)
++            guard resolved != declared else { return }
++            par.pointee.color_primaries = resolved.primaries
++            par.pointee.color_trc = resolved.transfer
++            par.pointee.color_space = resolved.matrix
++            par.pointee.color_range = resolved.range
++            let trcName = av_color_transfer_name(resolved.transfer).map { String(cString: $0) }
++                ?? "\(resolved.transfer.rawValue)"
++            EngineLog.emit(
++                "[Demuxer] stream=\(index): container declared no colour description; "
++                + "took trc=\(trcName) from the HEVC parameter sets",
++                category: .demux
++            )
++        }
++    }
++
+     /// AE#839: video packets read for the alternative-transfer SEI before the declared transfer is
+     /// believed. Broadcast HLG repeats it on every IRAP and the first packet is one, so a handful is
+     /// generous, and at the head of a container they are packets `find_stream_info` already queued.
