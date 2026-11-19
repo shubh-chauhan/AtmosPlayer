@@ -379,15 +379,12 @@ final class HomeFeed: ObservableObject {
         var seen = Set<String>()
         func build(_ specs: [Spec]) -> [HomeSection] {
             specs.compactMap { spec -> HomeSection? in
-                guard let row = Self.section(spec, results[spec.id] ?? []) else { return nil }
-                if spec.style == .ranked {
-                    seen.formUnion(row.items.map(\.id))
-                    return row
-                }
-                let fresh = row.items.filter { !seen.contains($0.id) }
-                let items = fresh.count >= 8 ? fresh : row.items
-                seen.formUnion(items.map(\.id))
-                return HomeSection(id: row.id, title: row.title, style: row.style, items: items, seeAll: row.seeAll)
+                let all = results[spec.id] ?? []
+                // Drop titles shown above before the row is capped, so the cap doesn't eat its fresh ones.
+                let fresh = spec.style == .ranked ? nil : Self.section(spec, all.filter { !seen.contains($0.id) })
+                guard let row = (fresh?.items.count ?? 0) >= 8 ? fresh : Self.section(spec, all) else { return nil }
+                seen.formUnion(row.items.map(\.id))
+                return row
             }
         }
         let top = build(topSpecs)
