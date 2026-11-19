@@ -147,7 +147,7 @@ struct TrailerBackdrop: View {
             }
         }
         .clipped()
-        .overlay(alignment: .top) {
+        .overlay(alignment: .center) {
             if TrailerPreviews.diagnosing {
                 Text("trailer \(youtubeId ?? "none") · active \(active ? "yes" : "no") · \(armed ? status : "not armed")")
                     .font(.caption.monospaced()).padding(6)
