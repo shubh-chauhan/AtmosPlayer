@@ -39,8 +39,17 @@ jobs:
 
       - name: Build (no code signing)
         shell: bash
+        env:
+          TMDB_SECRET: ${{ secrets.TMDB_TOKEN }}
         run: |
           set -o pipefail
+          # The TMDB read token (repo secret TMDB_TOKEN) goes into the app reversed and base64'd,
+          # so it isn't sitting in the binary as plain text. Masked so it never shows in the log.
+          TMDB_TOKEN_SCRAMBLED=""
+          if [ -n "$TMDB_SECRET" ]; then
+            TMDB_TOKEN_SCRAMBLED=$(printf %s "$TMDB_SECRET" | rev | base64 | tr -d '\n')
+            echo "::add-mask::$TMDB_TOKEN_SCRAMBLED"
+          fi
           xcodebuild build \
             -project AtmosPlayer.xcodeproj \
             -scheme AtmosPlayer \
@@ -55,6 +64,7 @@ jobs:
             MARKETING_VERSION="0.1.${{ github.run_number }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia" \
+            TMDB_TOKEN="$TMDB_TOKEN_SCRAMBLED" \
             2>&1 | tee build.log
 
       - name: Show compile errors
@@ -191,7 +201,16 @@ jobs:
           bash EngineBundle/apply-patches.sh build/SourcePackages/checkouts/AetherEngine
 
       - name: Build for the simulator
+        env:
+          TMDB_SECRET: ${{ secrets.TMDB_TOKEN }}
         run: |
+          # The TMDB read token (repo secret TMDB_TOKEN) goes into the app reversed and base64'd,
+          # so it isn't sitting in the binary as plain text. Masked so it never shows in the log.
+          TMDB_TOKEN_SCRAMBLED=""
+          if [ -n "$TMDB_SECRET" ]; then
+            TMDB_TOKEN_SCRAMBLED=$(printf %s "$TMDB_SECRET" | rev | base64 | tr -d '\n')
+            echo "::add-mask::$TMDB_TOKEN_SCRAMBLED"
+          fi
           xcodebuild build \
             -project AtmosPlayer.xcodeproj \
             -scheme AtmosPlayer \
@@ -203,7 +222,8 @@ jobs:
             -quiet \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
-            TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia"
+            TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia" \
+            TMDB_TOKEN="$TMDB_TOKEN_SCRAMBLED"
 
       - name: Screenshot screens
         run: |

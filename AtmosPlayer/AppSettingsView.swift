@@ -208,9 +208,16 @@ struct AppSettingsView: View {
                         .disabled(history.entries.isEmpty)
                 }
 
-                Section("About") {
+                Section {
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("Player engine", value: "AetherEngine")
+                } header: {
+                    Text("About")
+                } footer: {
+                    // TMDB's terms ask for this notice wherever its data is shown.
+                    if TMDB.isConfigured {
+                        Text("Title details and artwork come in part from TMDB. This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.")
+                    }
                 }
             }
             .readableWidth()
