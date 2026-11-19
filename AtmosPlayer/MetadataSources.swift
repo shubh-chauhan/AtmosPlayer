@@ -221,8 +221,8 @@ enum MetaResolver {
     static func enrichIfThin(_ meta: StremioMeta, ref: MetaRef, addons: [InstalledAddon]) async -> StremioMeta? {
         let key = "\(ref.type)/\(ref.id)"
         guard meta.isThin, !enriched.contains(key) else { return nil }
-        let richer = await enrich(meta, ref: ref, addons: addons)
-        guard !Task.isCancelled else { return nil }
+        // Nil when no source answered (offline, say): not marked done, so the next open tries again.
+        guard let richer = await enrich(meta, ref: ref, addons: addons), !Task.isCancelled else { return nil }
         enriched.insert(key)
         cache[key] = richer
         return richer
@@ -259,23 +259,25 @@ enum MetaResolver {
 
     /// The other sources' answers for `meta`, merged under it in order of trust: your meta
     /// addons, TVmaze (series), then IMDb's basics.
-    private static func enrich(_ meta: StremioMeta, ref: MetaRef, addons: [InstalledAddon]) async -> StremioMeta {
+    private static func enrich(_ meta: StremioMeta, ref: MetaRef, addons: [InstalledAddon]) async -> StremioMeta? {
         let imdb = ref.id.hasPrefix("tt")
         let series = meta.type == "series"
         async let fromAddons = addonMetas(ref, addons: addons, timeout: 8)
         async let fromTVMaze: StremioMeta? = imdb && series ? TVMaze.meta(imdb: ref.id, fallback: ref) : nil
         async let fromIMDb: MetaPreview? = imdb ? IMDbSuggest.title(ref.id) : nil
         var merged = meta
-        for other in await fromAddons { merged = merged.filling(from: other) }
-        if let tv = await fromTVMaze { merged = merged.filling(from: tv) }
+        var answered = false
+        for other in await fromAddons { merged = merged.filling(from: other); answered = true }
+        if let tv = await fromTVMaze { merged = merged.filling(from: tv); answered = true }
         if let basic = await fromIMDb {
+            answered = true
             let cast = (basic.description ?? "").split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             merged = merged.filling(from: StremioMeta(id: meta.id, type: meta.type, name: basic.name,
                                                       poster: basic.poster, releaseInfo: basic.releaseInfo,
                                                       cast: cast))
         }
-        return merged
+        return answered ? merged : nil
     }
 
     /// Details from your addons that serve this kind of id (Cinemeta aside), in your order.
