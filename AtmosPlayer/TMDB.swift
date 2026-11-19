@@ -269,6 +269,11 @@ extension TMDB.Details {
         Self.image(Self.best(images?.backdrops, where: { $0.iso_639_1 == nil })?.file_path, size: "w1280")
     }
 
+    /// A poster with no text, at full size: it fills a tall phone frame the way a backdrop can't.
+    var textlessPoster: String? {
+        Self.image(Self.best(images?.posters, where: { $0.iso_639_1 == nil })?.file_path, size: "original")
+    }
+
     var anyBackdrop: String? {
         Self.image(Self.best(images?.backdrops, where: { _ in true })?.file_path ?? backdrop_path, size: "w1280")
     }
@@ -387,7 +392,7 @@ extension TMDB.Details {
             cast: Array(castList), crew: crewList,
             tmdbRating: (vote_count ?? 0) > 0 ? vote_average : nil, tmdbVotes: vote_count,
             textlessBackdrop: textlessBackdrop, backdrop: anyBackdrop, logo: logo, poster: poster,
-            provenance: [:], availability: availability(region: TMDB.region))
+            textlessPoster: textlessPoster, version: MetaExtras.currentVersion, provenance: [:], availability: availability(region: TMDB.region))
     }
 }
 
@@ -425,11 +430,20 @@ struct MetaExtras: Codable, Equatable {
     var backdrop: String?
     var logo: String?
     var poster: String?
+    var textlessPoster: String?
+    /// Bumped when a TMDB field is added, so details saved by an older build are fetched again.
+    var version: Int?
+    static let currentVersion = 2
     /// Field name → the source that filled it (only fields the first source left empty).
     var provenance: [String: String] = [:]
     /// Where the title is licensed to stream, rent or buy. This is not whether your addons
     /// have a stream for it: the two are unrelated.
     var availability: Availability?
+
+    /// Text-free art shaped for the frame: a portrait poster for a tall one, else a backdrop.
+    func heroArt(portrait: Bool) -> String? {
+        portrait ? (textlessPoster ?? textlessBackdrop) : textlessBackdrop
+    }
 
     struct Availability: Codable, Equatable {
         let region: String

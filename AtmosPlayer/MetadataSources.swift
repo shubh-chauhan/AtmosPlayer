@@ -408,7 +408,7 @@ enum MetaResolver {
             have = await MetaCache.savedExtras(key)
         }
         // Streaming availability changes; everything else keeps for as long as the entry.
-        if let have, have.tmdbId != nil, have.availability?.isFresh ?? false { return have }
+        if let have, have.tmdbId != nil, have.version == MetaExtras.currentVersion, have.availability?.isFresh ?? false { return have }
         guard TMDB.isConfigured, ref.id.hasPrefix("tt") else { return have }
         if let running = extrasInflight[key] { return await running.value }
         let task = Task<MetaExtras?, Never> {

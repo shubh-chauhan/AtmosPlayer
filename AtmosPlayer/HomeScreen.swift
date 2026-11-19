@@ -741,9 +741,9 @@ struct HeroCard: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
-        .task(id: item.id) {
-            guard TMDB.isConfigured, textless == nil, item.id.hasPrefix("tt"),
-                  let art = await MetaResolver.extras(for: MetaRef(item))?.textlessBackdrop else { return }
+        .task(id: "\(item.id)/\(wide)") {
+            guard TMDB.isConfigured, item.id.hasPrefix("tt"),
+                  let art = await MetaResolver.extras(for: MetaRef(item))?.heroArt(portrait: !wide) else { return }
             // Only once it's decoded, so the card never flashes empty.
             if let url = ArtworkURL.best(art, maxPixel: 1800) { _ = await ImagePipeline.shared.image(url, maxPixel: 1800) }
             guard !Task.isCancelled else { return }

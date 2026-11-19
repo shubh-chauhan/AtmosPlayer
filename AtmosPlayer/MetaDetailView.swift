@@ -239,8 +239,9 @@ struct MetaDetailView: View {
             ZStack(alignment: wide ? .bottomLeading : .bottom) {
                 // The backdrop scrolls a little slower than the page and fades into the wash below.
                 // The size Home's big card decodes at on iPhone, so opening a title from it shows the same picture at once.
-                // TMDB's textless backdrop when there is one: no printed title behind the logo.
-                RemoteImage(url: extras?.textlessBackdrop ?? background,
+                // TMDB's text-free art when there is one: no printed title behind the logo, and
+                // on a phone a portrait poster, so the tall frame isn't a crop of a wide picture.
+                RemoteImage(url: extras?.heroArt(portrait: !wide) ?? background,
                             maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800,
                             placeholderSymbol: "")
                     .frame(width: geo.size.width, height: height + stretch)

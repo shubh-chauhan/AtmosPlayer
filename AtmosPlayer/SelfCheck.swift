@@ -120,7 +120,7 @@ enum SelfCheck {
          "images": {"backdrops": [{"file_path": "/t.jpg", "iso_639_1": null, "vote_average": 5, "width": 3840},
                                   {"file_path": "/x.jpg", "iso_639_1": "en", "vote_average": 9, "width": 1920}],
                     "logos": [{"file_path": "/l.png", "iso_639_1": "en", "vote_average": 5, "width": 800}],
-                    "posters": []},
+                    "posters": [{"file_path": "/tp.jpg", "iso_639_1": null, "vote_average": 5, "width": 2000}]},
          "videos": {"results": [{"key": "teaser", "site": "YouTube", "type": "Teaser"},
                                 {"key": "main", "site": "YouTube", "type": "Trailer", "official": true}]},
          "watch/providers": {"results": {"US": {"link": "L",
@@ -150,6 +150,8 @@ enum SelfCheck {
         let extras = details.extras(imdb: "tt9")
         expect(extras.tmdbId == 42 && extras.tvdbId == 77 && extras.tmdbKind == "tv", "ids recorded")
         expect(extras.textlessBackdrop == TMDB.imageBase + "w1280/t.jpg", "textless backdrop is the no-language one")
+        expect(extras.heroArt(portrait: true) == TMDB.imageBase + "original/tp.jpg"
+               && extras.heroArt(portrait: false) == extras.textlessBackdrop, "portrait frames get the textless poster")
         expect(extras.cast.first?.role == "Hero" && extras.cast.first?.photo == TMDB.imageBase + "w185/c.jpg",
                "cast with character and photo")
         expect(extras.companies == ["Studio"] && extras.countries == ["France"], "companies and countries")
