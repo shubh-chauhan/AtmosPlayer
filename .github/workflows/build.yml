@@ -318,7 +318,12 @@ jobs:
           phones = [d for d in devices if d["name"].startswith("iPhone")]
           pick = next((d for d in phones if "Pro" in d["name"] and "Max" not in d["name"]), phones[0])
           print(pick["udid"])')
-          set -o pipefail
+          # Booted and the app launched once first: a cold first launch inside xcodebuild times out.
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl launch "$UDID" com.atmosplayer.app
+          sleep 10
+          xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
           xcodebuild test-without-building \
             -project AtmosPlayer.xcodeproj \
             -scheme AtmosPlayer \
