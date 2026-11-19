@@ -230,7 +230,7 @@ struct MetaDetailView: View {
                 // The backdrop scrolls a little slower than the page and fades into the wash below.
                 // The size Home's big card decodes at on iPhone, so opening a title from it shows the same picture at once.
                 RemoteImage(url: background, maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800,
-                            placeholderSymbol: "", focused: true)
+                            placeholderSymbol: "")
                     .frame(width: geo.size.width, height: height + stretch)
                     .overlay(alignment: .bottom) {
                         // A fixed size, scaled on pull-down, so the video never re-lays out mid-gesture.

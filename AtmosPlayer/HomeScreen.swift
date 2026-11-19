@@ -568,11 +568,11 @@ struct HeroCarousel: View {
         .onChange(of: items.map(\.id)) { _, ids in
             if let current, !ids.contains(current) { self.current = nil }
         }
-        // The pages either side are ready (decoded and cropped) before you swipe to them.
+        // The pages either side are decoded before you swipe to them.
         .task(id: activeId) {
             guard let index = items.firstIndex(where: { $0.id == activeId }), items.count > 1 else { return }
             for neighbour in [items[(index + 1) % items.count], items[(index + items.count - 1) % items.count]] {
-                await ImagePipeline.shared.prefetch(neighbour.background ?? neighbour.poster, maxPixel: 1800, focused: true)
+                await ImagePipeline.shared.prefetch(neighbour.background ?? neighbour.poster, maxPixel: 1800)
             }
         }
         // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
@@ -662,7 +662,7 @@ struct HeroCard: View {
                 // A slow push-in on the page you're looking at.
                 Color.clear
                     .overlay {
-                        RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "", focused: true)
+                        RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
                             .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
                             .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
                     }
@@ -671,13 +671,29 @@ struct HeroCard: View {
                     }
                     .clipped()
 
-                LinearGradient(stops: [
-                    .init(color: .black.opacity(0.45), location: 0),
-                    .init(color: .clear, location: 0.18),
-                    .init(color: .clear, location: wide ? 0.5 : 0.38),
-                    .init(color: .black.opacity(0.65), location: wide ? 0.82 : 0.66),
-                    .init(color: .black, location: 1),
-                ], startPoint: .top, endPoint: .bottom)
+                if wide {
+                    LinearGradient(stops: [
+                        .init(color: .black.opacity(0.45), location: 0),
+                        .init(color: .clear, location: 0.18),
+                        .init(color: .clear, location: 0.5),
+                        .init(color: .black.opacity(0.65), location: 0.82),
+                        .init(color: .black, location: 1),
+                    ], startPoint: .top, endPoint: .bottom)
+                } else {
+                    // Portrait: the logo sits over the lower half, where some backdrops have their
+                    // own title printed; a deeper shade there keeps the logo the only lettering read.
+                    LinearGradient(stops: [
+                        .init(color: .black.opacity(0.45), location: 0),
+                        .init(color: .clear, location: 0.16),
+                        .init(color: .clear, location: 0.28),
+                        .init(color: .black.opacity(0.6), location: 0.46),
+                        .init(color: .black.opacity(0.85), location: 0.62),
+                        .init(color: .black, location: 0.8),
+                    ], startPoint: .top, endPoint: .bottom)
+                    // Darkest right behind the logo, fading out to the sides.
+                    RadialGradient(colors: [.black.opacity(0.55), .clear], center: UnitPoint(x: 0.5, y: 0.58),
+                                   startRadius: 0, endRadius: 220)
+                }
                 if wide {
                     LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0.35), .clear],
                                    startPoint: .leading, endPoint: UnitPoint(x: 0.7, y: 0.5))

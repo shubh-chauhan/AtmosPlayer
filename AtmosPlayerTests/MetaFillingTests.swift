@@ -58,33 +58,3 @@ final class MetaFillingTests: XCTestCase {
         XCTAssertEqual(mine.filling(from: theirs).videos.count, 1)
     }
 }
-
-final class ArtworkFocusTests: XCTestCase {
-    func testCentredWhenNothingFound() {
-        XCTAssertEqual(ArtworkFocus(salient: [], text: []).centre(keep: 0.4), 0.5, accuracy: 0.001)
-    }
-
-    func testFollowsTheSubject() {
-        // A person on the right of a wide still (Lupin's backdrop).
-        let focus = ArtworkFocus(salient: [CGRect(x: 0.5, y: 0, width: 0.4, height: 1)], text: [])
-        XCTAssertEqual(focus.centre(keep: 0.4), 0.7, accuracy: 0.03)
-    }
-
-    func testKeepsPrintedTitleOutOfFrame() {
-        // A face on the left and the title lettering on the right (Spider-Man's backdrop).
-        let focus = ArtworkFocus(salient: [CGRect(x: 0, y: 0, width: 0.4, height: 1),
-                                           CGRect(x: 0.42, y: 0.3, width: 0.55, height: 0.3)],
-                                 text: [CGRect(x: 0.42, y: 0.35, width: 0.55, height: 0.2)])
-        let centre = focus.centre(keep: 0.4)
-        XCTAssertLessThanOrEqual(centre + 0.2, 0.42 + 0.001, "the kept window must stop before the text")
-    }
-
-    func testNoShiftWhenTheImageFits() {
-        let focus = ArtworkFocus(salient: [CGRect(x: 0.8, y: 0, width: 0.2, height: 1)], text: [])
-        XCTAssertEqual(ArtworkFocus.shift(image: CGSize(width: 1000, height: 1500),
-                                          frame: CGSize(width: 400, height: 600), focus: focus), 0)
-        // A wide image in a tall frame moves left to bring the right-hand subject in.
-        XCTAssertLessThan(ArtworkFocus.shift(image: CGSize(width: 1920, height: 1080),
-                                             frame: CGSize(width: 400, height: 560), focus: focus), 0)
-    }
-}

@@ -68,7 +68,7 @@ targets:
         TEST_MEDIA_BASE: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
-  # Unit tests for the app's pure logic (metadata merging, artwork cropping). Run in CI on the simulator.
+  # Unit tests for the app's pure logic (metadata merging). Run in CI on the simulator.
   AtmosPlayerTests:
     type: bundle.unit-test
     platform: iOS

@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
 import ImageIO
-import Vision
 
 /// Poster / backdrop loader built for smooth scrolling: images are downloaded once (URLCache on
 /// disk), decoded and downscaled off the main thread to the size they are shown at, and kept in
@@ -12,8 +11,6 @@ actor ImagePipeline {
 
     // NSCache is thread-safe, so the synchronous cache check can skip the actor hop.
     private nonisolated(unsafe) let memory = NSCache<NSString, UIImage>()
-    private nonisolated(unsafe) let focusMemory = NSCache<NSString, FocusBox>()
-    private var focusInflight: [String: Task<ArtworkFocus, Never>] = [:]
     private var inflight: [String: Task<UIImage?, Never>] = [:]
     private let session: URLSession
 
@@ -38,29 +35,10 @@ actor ImagePipeline {
         memory.object(forKey: Self.key(url, maxPixel) as NSString)
     }
 
-    nonisolated func cachedFocus(_ url: URL) -> ArtworkFocus? {
-        focusMemory.object(forKey: url.absoluteString as NSString)?.focus
-    }
-
-    /// Where the subject and any printed lettering sit in an image, worked out once per URL.
-    func focus(of image: UIImage, url: URL) async -> ArtworkFocus {
-        let key = url.absoluteString
-        if let hit = focusMemory.object(forKey: key as NSString) { return hit.focus }
-        if let running = focusInflight[key] { return await running.value }
-        let task = Task<ArtworkFocus, Never>.detached(priority: .utility) { ArtworkFocus.analyse(image) }
-        focusInflight[key] = task
-        let result = await task.value
-        focusInflight[key] = nil
-        focusMemory.setObject(FocusBox(result), forKey: key as NSString)
-        return result
-    }
-
-    /// Loads (and for wide artwork shown cropped, analyses) an image before it scrolls into
-    /// view, so it appears in its first frame.
-    func prefetch(_ raw: String?, maxPixel: Int, focused: Bool = false) async {
-        guard let url = ArtworkURL.best(raw, maxPixel: maxPixel),
-              let image = await image(url, maxPixel: maxPixel), focused else { return }
-        _ = await focus(of: image, url: url)
+    /// Loads an image before it scrolls into view, so it appears in its first frame.
+    func prefetch(_ raw: String?, maxPixel: Int) async {
+        guard let url = ArtworkURL.best(raw, maxPixel: maxPixel) else { return }
+        _ = await image(url, maxPixel: maxPixel)
     }
 
     func image(_ url: URL, maxPixel: Int) async -> UIImage? {
@@ -127,93 +105,22 @@ enum ArtworkURL {
     }
 }
 
-private final class FocusBox {
-    let focus: ArtworkFocus
-    init(_ focus: ArtworkFocus) { self.focus = focus }
-}
-
-/// Where to crop a wide image shown in a narrower frame (a 16:9 backdrop on the tall Home card
-/// or title page). Cutting the middle out blindly can land on an empty wall beside the actor,
-/// or on half of the title lettering some backdrops have printed on them, right behind the
-/// logo. Vision finds what draws the eye and any text; the crop keeps the first and avoids
-/// the second.
-struct ArtworkFocus: Sendable, Equatable {
-    /// Normalised boxes (0…1, any vertical origin: only overlap matters).
-    var salient: [CGRect]
-    var text: [CGRect]
-
-    static func analyse(_ image: UIImage) -> ArtworkFocus {
-        guard let cgImage = image.cgImage else { return ArtworkFocus(salient: [], text: []) }
-        let saliency = VNGenerateAttentionBasedSaliencyImageRequest()
-        let text = VNDetectTextRectanglesRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up)
-        try? handler.perform([saliency, text])
-        let salient = (saliency.results?.first?.salientObjects ?? []).map(\.boundingBox)
-        // Small print (credits, a watermark) is fine to keep; title lettering is what clashes.
-        let words = (text.results ?? []).map(\.boundingBox).filter { $0.height > 0.04 }
-        return ArtworkFocus(salient: salient, text: words)
-    }
-
-    /// The horizontal centre (0…1 of the image width) to crop around when only `keep` of the
-    /// width fits.
-    func centre(keep: CGFloat) -> CGFloat {
-        guard keep < 0.98, keep > 0 else { return 0.5 }
-        func area(_ boxes: [CGRect], _ window: CGRect) -> CGFloat {
-            boxes.reduce(0) { sum, box in
-                let part = box.intersection(window)
-                return part.isNull ? sum : sum + part.width * part.height
-            }
-        }
-        let half = keep / 2
-        let steps = 48
-        var best: CGFloat = 0.5
-        var bestScore = -CGFloat.infinity
-        for step in 0...steps {
-            let centre = half + (1 - keep) * CGFloat(step) / CGFloat(steps)
-            let window = CGRect(x: centre - half, y: -1, width: keep, height: 3)
-            // Text costs more than a subject earns, so lettering is left out when it can be;
-            // a slight pull to the middle decides when nothing stands out.
-            let score = area(salient, window) - 3 * area(text, window) - 0.02 * abs(centre - 0.5)
-            if score > bestScore { bestScore = score; best = centre }
-        }
-        return best
-    }
-
-    /// How far to slide an image (filling `frame`, centred) so the crop lands on the subject.
-    static func shift(image: CGSize, frame: CGSize, focus: ArtworkFocus?) -> CGFloat {
-        guard let focus, image.width > 0, image.height > 0, frame.width > 0, frame.height > 0 else { return 0 }
-        let shown = image.width * max(frame.width / image.width, frame.height / image.height)
-        guard shown > frame.width + 1 else { return 0 }
-        return (0.5 - focus.centre(keep: frame.width / shown)) * shown
-    }
-}
-
 /// A remote image that fills its frame (cropping, never growing past it). `maxPixel` is the
 /// longest side, in pixels, it is decoded to: about the shown size in points times three.
-/// `focused` crops a too-wide image around its subject instead of its middle.
 struct RemoteImage: View {
     let url: String?
     var maxPixel: Int = 400
     var placeholderSymbol: String = "film"
-    var focused = false
 
     @State private var image: UIImage?
-    @State private var focus: ArtworkFocus?
 
-    init(url: String?, maxPixel: Int = 400, placeholderSymbol: String = "film", focused: Bool = false) {
+    init(url: String?, maxPixel: Int = 400, placeholderSymbol: String = "film") {
         self.url = url
         self.maxPixel = maxPixel
         self.placeholderSymbol = placeholderSymbol
-        self.focused = focused
         // Already decoded: show it in the first frame instead of flashing the placeholder.
         if let resolved = ArtworkURL.best(url, maxPixel: maxPixel) {
-            let hit = ImagePipeline.shared.cached(resolved, maxPixel: maxPixel)
-            let spot = focused ? ImagePipeline.shared.cachedFocus(resolved) : nil
-            // A focused image waits for its crop, so it never jumps sideways once shown.
-            if !focused || spot != nil {
-                _image = State(initialValue: hit)
-                _focus = State(initialValue: spot)
-            }
+            _image = State(initialValue: ImagePipeline.shared.cached(resolved, maxPixel: maxPixel))
         }
     }
 
@@ -221,22 +128,10 @@ struct RemoteImage: View {
         Color.clear
             .overlay {
                 if let image {
-                    Group {
-                        if focused {
-                            GeometryReader { geo in
-                                Image(uiImage: image)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: geo.size.width, height: geo.size.height)
-                                    .offset(x: ArtworkFocus.shift(image: image.size, frame: geo.size, focus: focus))
-                            }
-                        } else {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFill()
-                        }
-                    }
-                    .transition(.opacity)
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .transition(.opacity)
                 } else {
                     ZStack {
                         Color.white.opacity(0.08)
@@ -253,18 +148,13 @@ struct RemoteImage: View {
                     image = nil
                     return
                 }
-                if let hit = ImagePipeline.shared.cached(resolved, maxPixel: maxPixel), image === hit,
-                   !focused || focus != nil {
+                if let hit = ImagePipeline.shared.cached(resolved, maxPixel: maxPixel) {
+                    if image !== hit { image = hit }
                     return
                 }
-                guard let loaded = await ImagePipeline.shared.image(resolved, maxPixel: maxPixel),
-                      !Task.isCancelled else { return }
-                let spot = focused ? await ImagePipeline.shared.focus(of: loaded, url: resolved) : nil
-                guard !Task.isCancelled else { return }
-                if image === loaded && focus == spot { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    image = loaded
-                    focus = spot
+                let loaded = await ImagePipeline.shared.image(resolved, maxPixel: maxPixel)
+                if !Task.isCancelled, let loaded {
+                    withAnimation(.easeOut(duration: 0.2)) { image = loaded }
                 }
             }
     }
