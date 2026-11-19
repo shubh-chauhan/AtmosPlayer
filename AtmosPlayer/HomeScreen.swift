@@ -685,14 +685,14 @@ struct HeroCard: View {
                     LinearGradient(stops: [
                         .init(color: .black.opacity(0.45), location: 0),
                         .init(color: .clear, location: 0.16),
-                        .init(color: .clear, location: 0.28),
-                        .init(color: .black.opacity(0.6), location: 0.46),
-                        .init(color: .black.opacity(0.85), location: 0.62),
-                        .init(color: .black, location: 0.8),
+                        .init(color: .clear, location: 0.24),
+                        .init(color: .black.opacity(0.75), location: 0.44),
+                        .init(color: .black.opacity(0.92), location: 0.58),
+                        .init(color: .black, location: 0.72),
                     ], startPoint: .top, endPoint: .bottom)
                     // Darkest right behind the logo, fading out to the sides.
-                    RadialGradient(colors: [.black.opacity(0.55), .clear], center: UnitPoint(x: 0.5, y: 0.58),
-                                   startRadius: 0, endRadius: 220)
+                    RadialGradient(colors: [.black.opacity(0.7), .clear], center: UnitPoint(x: 0.5, y: 0.56),
+                                   startRadius: 0, endRadius: 240)
                 }
                 if wide {
                     LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0.35), .clear],

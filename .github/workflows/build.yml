@@ -172,7 +172,7 @@ jobs:
     # Runs the app in the iOS Simulator and screenshots the main screens, so a build can be
     # looked at before it's sideloaded. Pushed to the `previews` branch (raw files are public).
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 65
     permissions:
       contents: write
     steps:
