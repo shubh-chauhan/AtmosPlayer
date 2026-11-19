@@ -191,9 +191,8 @@ jobs:
           bash EngineBundle/apply-patches.sh build/SourcePackages/checkouts/AetherEngine
 
       - name: Build for the simulator
-        # The app plus its unit tests (run at the end of this job).
         run: |
-          xcodebuild build-for-testing \
+          xcodebuild build \
             -project AtmosPlayer.xcodeproj \
             -scheme AtmosPlayer \
             -configuration Debug \
@@ -309,8 +308,10 @@ jobs:
           git commit -qm "Screenshots of ${{ github.sha }}"
           git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" previews
 
-      - name: Unit tests
-        timeout-minutes: 15
+      - name: Self-check
+        # Pure-logic checks built into Debug builds (AtmosPlayer/SelfCheck.swift): the app runs
+        # them when launched with -selfCheck, prints SELFCHECK PASS / FAIL lines and quits.
+        timeout-minutes: 5
         run: |
           UDID=$(xcrun simctl list devices available -j | python3 -c '
           import json, sys
@@ -318,23 +319,15 @@ jobs:
           phones = [d for d in devices if d["name"].startswith("iPhone")]
           pick = next((d for d in phones if "Pro" in d["name"] and "Max" not in d["name"]), phones[0])
           print(pick["udid"])')
-          # Booted and the app launched once first: a cold first launch inside xcodebuild times out.
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl launch "$UDID" com.atmosplayer.app
-          sleep 10
-          xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
-          xcodebuild test-without-building \
-            -project AtmosPlayer.xcodeproj \
-            -scheme AtmosPlayer \
-            -destination "id=$UDID" \
-            -derivedDataPath build \
-            -skipPackageUpdates \
-            2>&1 | tee test.log | grep -E "Test Case|error|failed|passed|TEST" || true
-          grep -q -e "TEST EXECUTE SUCCEEDED" -e "Test Suite 'All tests' passed" test.log || {
-            grep -E "error:|XCTAssert" test.log | sort -u | head -20 | while IFS= read -r line; do echo "::error::$line"; done
-            exit 1
-          }
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/AtmosPlayer.app
+          xcrun simctl launch --console-pty --terminate-running-process "$UDID" com.atmosplayer.app -selfCheck YES > selfcheck.log 2>&1 &
+          for i in $(seq 1 60); do grep -q "SELFCHECK" selfcheck.log && break; sleep 2; done
+          sleep 2
+          cat selfcheck.log | grep SELFCHECK || true
+          grep "SELFCHECK FAIL" selfcheck.log | while IFS= read -r line; do echo "::error::$line"; done
+          grep -q "SELFCHECK PASS" selfcheck.log || { echo "::error::Self-check did not pass"; exit 1; }
 
   test-media:
     name: Atmos test MKV

@@ -42,6 +42,12 @@ struct AtmosPlayerApp: App {
     @StateObject private var account = StremioAccount()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        #if DEBUG
+        SelfCheck.runIfAsked()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
