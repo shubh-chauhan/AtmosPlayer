@@ -12,6 +12,7 @@ struct HomeScreen: View {
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @ObservedObject private var feed = HomeFeed.shared
     @ObservedObject private var calendar = EpisodeCalendar.shared
+    @ObservedObject private var recommender = Recommender.shared
 
     @State private var path = NavigationPath()
     @State private var startingId: String?
@@ -34,6 +35,10 @@ struct HomeScreen: View {
                     }
                 LazyVStack(alignment: .leading, spacing: 32) {
                     continueWatching
+
+                    if let recommended = recommender.row("recommended") {
+                        HomeSectionView(section: recommended)
+                    }
 
                     if !calendar.fresh.isEmpty {
                         Shelf(title: "New Episodes", spacing: 14) {
@@ -61,11 +66,18 @@ struct HomeScreen: View {
                         }
                     }
 
+                    if let liked = recommender.row("like-favorites") {
+                        HomeSectionView(section: liked)
+                    }
+
                     ForEach(feed.top.dropFirst(2)) { section in
                         HomeSectionView(section: section)
                     }
 
-                    if let suggestion = feed.suggestion {
+                    // TMDB's picks for your last title when there are any; else the genre row.
+                    if let because = recommender.becauseRows.first {
+                        HomeSectionView(section: because)
+                    } else if let suggestion = feed.suggestion {
                         HomeSectionView(section: suggestion)
                     }
 
@@ -82,6 +94,12 @@ struct HomeScreen: View {
 
                     if !feed.isEmpty {
                         GenreBrowser()
+                    }
+
+                    ForEach(["gems-for-you", "popular-genres", "discover-new"], id: \.self) { id in
+                        if let row = recommender.row(id) {
+                            HomeSectionView(section: row)
+                        }
                     }
 
                     ForEach(feed.rest) { section in
@@ -136,6 +154,14 @@ struct HomeScreen: View {
             .task(id: watch.entries.first?.ref.metaId) {
                 await feed.loadSuggestion(from: watch.entries.first)
             }
+            // Personal rows: rebuilt when what you watch or save changes (at most every few hours otherwise).
+            .task(id: tasteKey) {
+                ViewingLog.shared.observe(watch: watch, favorites: favorites)
+                guard PreviewMode.screen == nil else { return }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled else { return }
+                await recommender.refresh(watch: watch, favorites: favorites, library: account.library)
+            }
             // The shows you follow: refreshed when that list changes.
             .task(id: followedKey) {
                 await calendar.load(series: followed)
@@ -174,6 +200,10 @@ struct HomeScreen: View {
                     background: $0.ref.background)
         }
         return favorites.items + account.library + watching
+    }
+
+    private var tasteKey: String {
+        "\(watch.entries.first?.id ?? "")|\(watch.entries.count)|\(favorites.items.count)|\(account.library.count)"
     }
 
     private var followedKey: String {
@@ -649,6 +679,8 @@ struct HeroCard: View {
     var stretch: CGFloat = 0
     var onTrailer: (Bool) -> Void = { _ in }
     let onOpen: () -> Void
+    /// TMDB's backdrop without printed text, so the title logo is the only lettering on the card.
+    @State private var textless: String?
     @EnvironmentObject private var favorites: FavoritesStore
     @Environment(\.verticalSizeClass) private var verticalSize
     /// Landscape iPhone: little height, so a smaller logo and shorter synopsis.
@@ -662,7 +694,7 @@ struct HeroCard: View {
                 // A slow push-in on the page you're looking at.
                 Color.clear
                     .overlay {
-                        RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
+                        RemoteImage(url: textless ?? item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
                             .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
                             .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
                     }
@@ -709,6 +741,14 @@ struct HeroCard: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
+        .task(id: item.id) {
+            guard TMDB.isConfigured, textless == nil, item.id.hasPrefix("tt"),
+                  let art = await MetaResolver.extras(for: MetaRef(item))?.textlessBackdrop else { return }
+            // Only once it's decoded, so the card never flashes empty.
+            if let url = ArtworkURL.best(art, maxPixel: 1800) { _ = await ImagePipeline.shared.image(url, maxPixel: 1800) }
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.4)) { textless = art }
+        }
     }
 
     private var content: some View {
@@ -874,12 +914,15 @@ struct GenreBrowser: View {
 /// "See All" and genre pages: a poster grid that keeps loading as you scroll.
 struct CatalogGridScreen: View {
     let route: CatalogRoute
+    @EnvironmentObject private var addons: AddonStore
     @State private var type: String
     /// Cinemeta's "top" (popular now) or "imdbRating" (best rated) list for the same genre.
     @State private var catalog: String
     @State private var items: [MetaPreview] = []
     @State private var loading = false
     @State private var exhausted = false
+    /// How far into a non-Cinemeta source we are (TMDB pages are 20 long whatever was kept).
+    @State private var offset = 0
 
     private let columns = [GridItem(.adaptive(minimum: Device.size(104)), spacing: Device.isPad ? 18 : 12)]
 
@@ -942,6 +985,7 @@ struct CatalogGridScreen: View {
         .task(id: LoadKey(type: type, catalog: catalog)) {
             items = []
             exhausted = false
+            offset = 0
             await loadMore()
         }
     }
@@ -952,7 +996,19 @@ struct CatalogGridScreen: View {
         defer { loading = false }
         let wanted = type
         let list = catalog
-        let page = await Cinemeta.catalog(type: wanted, id: list, genre: route.genre, skip: items.count)
+        // A TMDB list or an addon catalog pages through its own source; Cinemeta's as before.
+        let page: [MetaPreview]
+        if let routed = route.source {
+            // A platform page switches between its movies and its series.
+            var source = routed
+            if route.allowsTypeSwitch, case let .tmdbDiscover(_, query) = routed {
+                source = .tmdbDiscover(kind: wanted == "series" ? "tv" : "movie", query: query)
+            }
+            page = await source.load(after: offset, addons: addons.addons)
+            offset += source.needsTMDB ? 20 : page.count
+        } else {
+            page = await Cinemeta.catalog(type: wanted, id: list, genre: route.genre, skip: items.count)
+        }
         guard wanted == type, list == catalog else { return }
         let known = Set(items.map(\.id))
         let fresh = page.filter { !known.contains($0.id) && $0.poster != nil }

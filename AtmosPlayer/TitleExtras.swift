@@ -5,6 +5,8 @@ import SwiftUI
 /// IMDb score, awards, runtime and year as a row of tiles under the description.
 struct RatingsRow: View {
     let meta: StremioMeta
+    /// TMDB's user score, shown beside IMDb's (never in place of it).
+    var tmdbRating: Double? = nil
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -23,6 +25,16 @@ struct RatingsRow: View {
                         }
                     } caption: {
                         Stars(value: value / 2)
+                    }
+                }
+                if let tmdbRating, tmdbRating > 0 {
+                    tile {
+                        HStack(spacing: 6) {
+                            TMDBMark(height: 14)
+                            Text(String(format: "%.0f%%", tmdbRating * 10)).font(.title3.weight(.bold).monospacedDigit())
+                        }
+                    } caption: {
+                        Text("User score")
                     }
                 }
                 if let awards = meta.awards, !awards.isEmpty {
@@ -101,14 +113,33 @@ struct PersonRoute: Hashable {
 
 struct CastShelf: View {
     let meta: StremioMeta
+    /// With TMDB: photos, and the character each actor plays.
+    var extras: MetaExtras? = nil
 
     private var people: [(name: String, role: String)] {
         var list: [(String, String)] = []
         var seen = Set<String>()
+        if let extras, !extras.cast.isEmpty {
+            for person in extras.crew where person.role == "Director" && seen.insert(person.name).inserted {
+                list.append((person.name, "Director"))
+            }
+            for person in extras.cast.prefix(20) where seen.insert(person.name).inserted {
+                list.append((person.name, person.role ?? "Actor"))
+            }
+            for person in extras.crew where ["Creator", "Writer", "Screenplay"].contains(person.role ?? "")
+                && seen.insert(person.name).inserted {
+                list.append((person.name, person.role ?? "Writer"))
+            }
+            return list
+        }
         for name in meta.directors where seen.insert(name).inserted { list.append((name, "Director")) }
         for name in meta.cast where seen.insert(name).inserted { list.append((name, "Actor")) }
         for name in meta.writers where seen.insert(name).inserted { list.append((name, "Writer")) }
         return list
+    }
+
+    private func photo(_ name: String) -> String? {
+        extras.flatMap { x in (x.cast + x.crew).first { $0.name == name }?.photo }
     }
 
     var body: some View {
@@ -116,7 +147,7 @@ struct CastShelf: View {
             ForEach(people, id: \.name) { person in
                 NavigationLink(value: PersonRoute(name: person.name)) {
                     VStack(spacing: 8) {
-                        PersonAvatar(name: person.name, size: 76)
+                        PersonAvatar(name: person.name, size: 76, photoURL: photo(person.name))
                         VStack(spacing: 2) {
                             Text(person.name)
                                 .font(.caption.weight(.semibold))
@@ -203,6 +234,8 @@ actor PersonDirectory {
 struct PersonAvatar: View {
     let name: String
     let size: CGFloat
+    /// A known photo (TMDB's); without one, Wikipedia is asked by name.
+    var photoURL: String? = nil
     @State private var photo: String?
 
     private var initials: String {
@@ -232,7 +265,11 @@ struct PersonAvatar: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
         .overlay(Circle().stroke(.white.opacity(0.1)))
-        .task(id: name) {
+        .task(id: name + (photoURL ?? "")) {
+            if let photoURL {
+                photo = photoURL
+                return
+            }
             let found = await PersonDirectory.shared.info(for: name).photo
             if found != photo { withAnimation(.easeOut(duration: 0.25)) { photo = found } }
         }
@@ -340,6 +377,9 @@ struct PersonScreen: View {
 enum SimilarTitles {
     /// Popular titles of the same kind sharing its genres: both main genres first, then the first.
     static func find(for meta: StremioMeta) async -> [MetaPreview] {
+        // With TMDB: its recommendations and similar titles, ranked for you.
+        let personal = await Recommender.shared.similar(to: meta)
+        if personal.count >= 6 { return personal }
         guard let first = meta.genres.first else { return [] }
         let type = meta.type == "series" ? "series" : "movie"
         let pool = await Cinemeta.catalog(type: type, id: "top", genre: first)

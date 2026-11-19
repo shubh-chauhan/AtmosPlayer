@@ -25,6 +25,8 @@ struct MetaDetailView: View {
     @State private var season: Int = 1
     @State private var expandedDescription = false
     @State private var similar: [MetaPreview] = []
+    /// TMDB's extra details (photos, roles, companies, textless art, where it streams).
+    @State private var extras: MetaExtras?
     /// The navigation bar fades in once the backdrop has scrolled away.
     @State private var showBar = false
     /// Trailer preview behind the title: shown, sound on, and whether this page is on top.
@@ -132,7 +134,10 @@ struct MetaDetailView: View {
                     VStack(alignment: .leading, spacing: 30) {
                         if !wide { descriptionBlock }
                         if let meta {
-                            RatingsRow(meta: meta)
+                            RatingsRow(meta: meta, tmdbRating: extras?.tmdbRating)
+                        }
+                        if let availability = extras?.availability, !availability.offers.isEmpty {
+                            WhereToWatch(availability: availability)
                         }
                         if isSeries && !orderedVideos.isEmpty {
                             VStack(alignment: .leading, spacing: 14) {
@@ -151,8 +156,9 @@ struct MetaDetailView: View {
                                 .foregroundStyle(.white.opacity(0.6))
                                 .padding(.horizontal, Device.margin)
                         }
-                        if let meta, !(meta.cast.isEmpty && meta.directors.isEmpty && meta.writers.isEmpty) {
-                            CastShelf(meta: meta)
+                        if let meta, !(meta.cast.isEmpty && meta.directors.isEmpty && meta.writers.isEmpty
+                                       && (extras?.cast.isEmpty ?? true)) {
+                            CastShelf(meta: meta, extras: extras)
                         }
                         if !similar.isEmpty {
                             Shelf(title: "More Like This") {
@@ -205,6 +211,10 @@ struct MetaDetailView: View {
         .task(id: meta?.id) {
             if let meta, similar.isEmpty { similar = await SimilarTitles.find(for: meta) }
         }
+        .task {
+            let found = await MetaResolver.extras(for: ref)
+            if !Task.isCancelled, found != extras { withAnimation(.easeOut(duration: 0.3)) { extras = found } }
+        }
         .navigationDestination(item: $streamsRoute) { route in
             StreamsView(video: route.video, queue: route.queue)
         }
@@ -229,7 +239,9 @@ struct MetaDetailView: View {
             ZStack(alignment: wide ? .bottomLeading : .bottom) {
                 // The backdrop scrolls a little slower than the page and fades into the wash below.
                 // The size Home's big card decodes at on iPhone, so opening a title from it shows the same picture at once.
-                RemoteImage(url: background, maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800,
+                // TMDB's textless backdrop when there is one: no printed title behind the logo.
+                RemoteImage(url: extras?.textlessBackdrop ?? background,
+                            maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800,
                             placeholderSymbol: "")
                     .frame(width: geo.size.width, height: height + stretch)
                     .overlay(alignment: .bottom) {
@@ -604,6 +616,12 @@ struct MetaDetailView: View {
         if !meta.directors.isEmpty { facts.append(Fact(label: meta.directors.count > 1 ? "Directors" : "Director",
                                                        value: meta.directors.joined(separator: ", "))) }
         if !meta.writers.isEmpty { facts.append(Fact(label: "Writers", value: meta.writers.prefix(4).joined(separator: ", "))) }
+        if let original = extras?.originalTitle, original != meta.name, !original.isEmpty {
+            facts.append(Fact(label: "Original title", value: original))
+        }
+        if let companies = extras?.companies, !companies.isEmpty {
+            facts.append(Fact(label: "Production", value: companies.prefix(3).joined(separator: ", ")))
+        }
         if let country = meta.country, !country.isEmpty { facts.append(Fact(label: "Country", value: country)) }
         if let language = meta.language, !language.isEmpty { facts.append(Fact(label: "Language", value: language)) }
         if let awards = meta.awards, !awards.isEmpty { facts.append(Fact(label: "Awards", value: awards)) }

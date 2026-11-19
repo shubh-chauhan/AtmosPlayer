@@ -4,14 +4,18 @@ struct CatalogRow: Identifiable {
     let id: String
     let title: String
     let items: [MetaPreview]
+    /// Where "See All" pages from (an addon's catalog), if anywhere.
+    var source: CatalogSource? = nil
 }
 
 /// Loads the browsable catalog rows of every installed addon, in addon order.
 enum CatalogLoader {
-    static func rows(_ addons: [InstalledAddon]) async -> [CatalogRow] {
+    /// `excludingCinemeta`: Discover already has Cinemeta's lists (Home, genres, Popular).
+    static func rows(_ addons: [InstalledAddon], excludingCinemeta: Bool = false) async -> [CatalogRow] {
         var jobs: [(String, String, InstalledAddon, StremioCatalog)] = []
-        let showAddonName = addons.filter { !$0.manifest.catalogs.isEmpty }.count > 1
-        for addon in addons {
+        let shown = excludingCinemeta ? addons.filter { !$0.transportURL.contains("cinemeta") } : addons
+        let showAddonName = shown.filter { !$0.manifest.catalogs.isEmpty }.count > 1
+        for addon in shown {
             for catalog in addon.manifest.catalogs where catalog.isBrowsable {
                 let name = catalog.name ?? catalog.id
                 var title = "\(name) \(typeLabel(catalog.type))"
@@ -22,8 +26,10 @@ enum CatalogLoader {
         return await withTaskGroup(of: (Int, CatalogRow?).self) { group in
             for (index, job) in jobs.enumerated() {
                 group.addTask {
-                    let items = (try? await StremioClient.catalog(job.2, job.3)) ?? []
-                    return (index, items.isEmpty ? nil : CatalogRow(id: job.0, title: job.1, items: items))
+                    // A down or slow addon just leaves its rows out.
+                    let items = (try? await StremioClient.catalog(job.2, job.3, timeout: 12)) ?? []
+                    let source = CatalogSource.addon(addonId: job.2.id, type: job.3.type, catalog: job.3.id, genre: nil)
+                    return (index, items.isEmpty ? nil : CatalogRow(id: job.0, title: job.1, items: items, source: source))
                 }
             }
             var collected: [(Int, CatalogRow)] = []
@@ -187,6 +193,31 @@ struct PosterCard: View {
     }
 }
 
+/// Grey stand-ins for a row that is still loading.
+struct ShelfSkeleton: View {
+    var count = 4
+    @State private var dim = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.1)).frame(width: 160, height: 18)
+                .padding(.horizontal, Device.margin)
+            HStack(spacing: 12) {
+                ForEach(0..<count, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(.white.opacity(0.08))
+                        .frame(width: Device.size(124), height: Device.size(124) * 1.5)
+                }
+            }
+            .padding(.horizontal, Device.margin)
+        }
+        .opacity(dim ? 0.5 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { dim = true }
+        .accessibilityLabel("Loading")
+    }
+}
+
 /// Kept for screens that still use the old name.
 typealias PosterImage = RemoteImage
 
@@ -204,6 +235,10 @@ struct SearchScreen: View {
     @State private var addonsPending = 0
     /// What the rows on screen are for; older rows stay (dimmed) until the new ones arrive.
     @State private var shownQuery = ""
+    /// Your addons' own catalogs, shown under Popular before you type.
+    @State private var addonRows: [CatalogRow] = []
+    @State private var addonRowsFor: [String] = []
+    @State private var addonRowsLoading = false
     /// What was searched for lately, newest first, one per line.
     @AppStorage("search.recent") private var recentRaw = ""
 
@@ -317,7 +352,7 @@ struct SearchScreen: View {
                     ForEach(people) { person in
                         NavigationLink(value: PersonRoute(name: person.name)) {
                             VStack(spacing: 6) {
-                                PersonAvatar(name: person.name, size: Device.size(76))
+                                PersonAvatar(name: person.name, size: Device.size(76), photoURL: person.photo)
                                 Text(person.name)
                                     .font(.caption.weight(.medium))
                                     .foregroundStyle(.white.opacity(0.9))
@@ -372,6 +407,9 @@ struct SearchScreen: View {
         }
         GenreBrowser()
             .padding(.top, 8)
+        if TMDB.isConfigured {
+            PlatformBrowser()
+        }
         if let popular = feed.top.first(where: { $0.id == "top-movies" }) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Popular Right Now").font(.title3.bold()).foregroundStyle(.white)
@@ -386,6 +424,31 @@ struct SearchScreen: View {
             }
             .padding(.horizontal, Device.margin)
         }
+        if addonRowsLoading && addonRows.isEmpty {
+            ShelfSkeleton()
+        }
+        ForEach(addonRows) { row in
+            Shelf(title: row.title,
+                  seeAll: row.source.map { CatalogRoute(title: row.title, type: "", catalogId: "", source: $0) }) {
+                ForEach(row.items.filter { $0.poster != nil }.prefix(20)) { item in
+                    NavigationLink(value: MetaRef(item)) {
+                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster)
+                    }
+                    .buttonStyle(CardButtonStyle())
+                }
+            }
+        }
+        Color.clear.frame(height: 1)
+            .task(id: addons.addons.map(\.id)) {
+                let ids = addons.addons.map(\.id)
+                guard ids != addonRowsFor else { return }
+                addonRowsLoading = addons.addons.contains { !$0.transportURL.contains("cinemeta") && !$0.manifest.catalogs.isEmpty }
+                let rows = await CatalogLoader.rows(addons.addons, excludingCinemeta: true)
+                addonRowsLoading = false
+                guard !Task.isCancelled else { return }
+                addonRowsFor = ids
+                withAnimation(.easeOut(duration: 0.25)) { addonRows = rows }
+            }
     }
 
     /// IMDb's suggestions (best match first, typo-tolerant, with people) and Cinemeta's movie and
@@ -405,8 +468,9 @@ struct SearchScreen: View {
         if Task.isCancelled { return }
 
         enum Answer {
-            case imdb(CatalogRow?, [IMDbSuggest.Person])
-            case row(order: Int, CatalogRow?, addon: Bool)
+            /// A title source for the merged list (and people, from the source that has them).
+            case main(String, [MetaPreview], [IMDbSuggest.Person])
+            case row(order: Int, CatalogRow?)
         }
         let others = addons.addons.filter { !$0.transportURL.contains("cinemeta") }
         let named = others.filter { addon in addon.manifest.catalogs.contains { $0.isSearchable } }.count > 1
@@ -421,7 +485,8 @@ struct SearchScreen: View {
 
         pending = 3
         addonsPending = addonJobs.count
-        var arrived: [(Int, CatalogRow)] = []
+        var pools: [String: [MetaPreview]] = [:]
+        var addonRows: [(Int, CatalogRow)] = []
         var fresh = true
         // The first answer replaces the previous search's rows; later ones add to them.
         func show(_ update: () -> Void) {
@@ -433,47 +498,69 @@ struct SearchScreen: View {
             }
             withAnimation(.easeOut(duration: 0.2)) { update() }
         }
+        // One merged list (best matches as a grid, then more movies and series); each addon's
+        // own row after it, without the titles already above.
+        func rows() -> [CatalogRow] {
+            let order = ["tmdb", "imdb", "cinemeta/movie", "cinemeta/series"]
+            let merged = UnifiedSearch.merge(text, order.compactMap { pools[$0] })
+            var out: [CatalogRow] = []
+            let top = Array(merged.prefix(12))
+            if !top.isEmpty { out.append(CatalogRow(id: "imdb/top", title: "Top Results", items: top)) }
+            let more = merged.dropFirst(12)
+            let movies = more.filter { $0.type == "movie" }
+            let series = more.filter { $0.type == "series" }
+            if !movies.isEmpty { out.append(CatalogRow(id: "more/movie", title: "More Movies", items: Array(movies))) }
+            if !series.isEmpty { out.append(CatalogRow(id: "more/series", title: "More Series", items: Array(series))) }
+            let shown = Set(merged.map(\.id))
+            for (_, row) in addonRows.sorted(by: { $0.0 < $1.0 }) {
+                let items = row.items.filter { !shown.contains($0.id) }
+                if !items.isEmpty { out.append(CatalogRow(id: row.id, title: row.title, items: items, source: row.source)) }
+            }
+            return out
+        }
 
         await withTaskGroup(of: Answer.self) { group in
-            group.addTask {
-                let found = await IMDbSuggest.search(text)
-                let top = Array(found.titles.prefix(10))
-                return .imdb(top.isEmpty ? nil : CatalogRow(id: "imdb/top", title: "Top Results", items: top),
-                             Array(found.people.prefix(12)))
+            if TMDB.isConfigured {
+                // TMDB's documented search instead of IMDb's undocumented suggestions.
+                group.addTask { @MainActor in
+                    let found = await UnifiedSearch.tmdb(text)
+                    return .main("tmdb", found.titles, Array(found.people.prefix(12)))
+                }
+            } else {
+                group.addTask {
+                    let found = await IMDbSuggest.search(text)
+                    return .main("imdb", Array(found.titles.prefix(10)), Array(found.people.prefix(12)))
+                }
             }
             group.addTask {
-                let items = await Cinemeta.search(type: "movie", text)
-                return .row(order: 1, items.isEmpty ? nil : CatalogRow(id: "cinemeta/movie", title: "Movies", items: items), addon: false)
+                .main("cinemeta/movie", await Cinemeta.search(type: "movie", text), [])
             }
             group.addTask {
-                let items = await Cinemeta.search(type: "series", text)
-                return .row(order: 2, items.isEmpty ? nil : CatalogRow(id: "cinemeta/series", title: "Series", items: items), addon: false)
+                .main("cinemeta/series", await Cinemeta.search(type: "series", text), [])
             }
             for job in addonJobs {
                 group.addTask {
                     let items = (try? await StremioClient.catalog(job.addon, job.catalog, search: text, timeout: 8)) ?? []
-                    return .row(order: job.order, items.isEmpty ? nil : CatalogRow(id: job.id, title: job.title, items: items),
-                                addon: true)
+                    return .row(order: job.order, items.isEmpty ? nil : CatalogRow(id: job.id, title: job.title, items: items))
                 }
             }
             for await answer in group {
                 if Task.isCancelled { group.cancelAll(); return }
-                var row: (Int, CatalogRow)?
+                var changed = false
                 var found: [IMDbSuggest.Person] = []
                 switch answer {
-                case .imdb(let top, let list):
+                case .main(let key, let items, let list):
                     pending -= 1
-                    if let top { row = (0, top) }
+                    if !items.isEmpty { pools[key] = items; changed = true }
                     found = list
-                case .row(let order, let result, let addon):
-                    if addon { addonsPending -= 1 } else { pending -= 1 }
-                    if let result { row = (order, result) }
+                case .row(let order, let result):
+                    addonsPending -= 1
+                    if let result { addonRows.append((order, result)); changed = true }
                 }
-                guard row != nil || !found.isEmpty else { continue }
-                if let row { arrived.append(row) }
-                let sorted = arrived.sorted { $0.0 < $1.0 }.map { $0.1 }
+                guard changed || !found.isEmpty else { continue }
+                let next = rows()
                 show {
-                    results = sorted
+                    results = next
                     if !found.isEmpty { people = found }
                 }
             }

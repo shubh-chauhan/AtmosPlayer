@@ -30,6 +30,19 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
+      - name: Fetch the TMDB logo (attribution)
+        # TMDB's terms ask for its logo where its data is shown; fetched from TMDB's own brand
+        # page at build time. Without it the app shows the name in text instead.
+        run: |
+          dir=AtmosPlayer/Assets.xcassets/TMDBLogo.imageset
+          mkdir -p "$dir"
+          if curl -sfL -o "$dir/tmdb-logo.svg" "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"; then
+            printf '%s' '{"images":[{"filename":"tmdb-logo.svg","idiom":"universal"}],"info":{"author":"xcode","version":1},"properties":{"preserves-vector-representation":true}}' > "$dir/Contents.json"
+          else
+            rm -rf "$dir"
+            echo "::warning::TMDB logo not downloaded; the app shows the name instead"
+          fi
+
       - name: Resolve packages and patch the engine
         # EngineBundle/patches holds engine fixes not yet upstream (HDR read from the HEVC
         # parameter sets when the container has no colour tags).
@@ -192,6 +205,19 @@ jobs:
         run: |
           brew install xcodegen
           xcodegen generate
+
+      - name: Fetch the TMDB logo (attribution)
+        # TMDB's terms ask for its logo where its data is shown; fetched from TMDB's own brand
+        # page at build time. Without it the app shows the name in text instead.
+        run: |
+          dir=AtmosPlayer/Assets.xcassets/TMDBLogo.imageset
+          mkdir -p "$dir"
+          if curl -sfL -o "$dir/tmdb-logo.svg" "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"; then
+            printf '%s' '{"images":[{"filename":"tmdb-logo.svg","idiom":"universal"}],"info":{"author":"xcode","version":1},"properties":{"preserves-vector-representation":true}}' > "$dir/Contents.json"
+          else
+            rm -rf "$dir"
+            echo "::warning::TMDB logo not downloaded; the app shows the name instead"
+          fi
 
       - name: Resolve packages and patch the engine
         # EngineBundle/patches holds engine fixes not yet upstream (HDR read from the HEVC

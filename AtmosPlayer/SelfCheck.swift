@@ -11,6 +11,9 @@ enum SelfCheck {
         checkSavedMeta()
         checkTMDBMapping()
         checkTokenAndPolicy()
+        checkCatalogs()
+        checkRecommendations()
+        checkSearch()
         if failures.isEmpty {
             print("SELFCHECK PASS")
         } else {
@@ -120,6 +123,9 @@ enum SelfCheck {
                     "posters": []},
          "videos": {"results": [{"key": "teaser", "site": "YouTube", "type": "Teaser"},
                                 {"key": "main", "site": "YouTube", "type": "Trailer", "official": true}]},
+         "watch/providers": {"results": {"US": {"link": "L",
+            "flatrate": [{"provider_id": 8, "provider_name": "Netflix", "logo_path": "/n.png", "display_priority": 1}],
+            "rent": [{"provider_id": 2, "provider_name": "Apple TV", "logo_path": "/a.png", "display_priority": 3}]}}},
          "season/1": {"season_number": 1, "episodes": [
             {"season_number": 1, "episode_number": 1, "name": "One", "overview": "", "still_path": "/s.jpg",
              "air_date": "2021-01-08", "vote_average": 0}]}}
@@ -148,6 +154,11 @@ enum SelfCheck {
                "cast with character and photo")
         expect(extras.companies == ["Studio"] && extras.countries == ["France"], "companies and countries")
         expect(extras.originalTitle == "Show O" && extras.tmdbRating == 7.6, "original title and TMDB rating")
+
+        let us = details.availability(region: "US")
+        expect(us.offers.map(\.name) == ["Netflix", "Apple TV"] && us.offers.first?.kind == .subscription
+               && us.offers.last?.kind == .rent && us.link == "L", "where to watch: subscription and rent, in order")
+        expect(details.availability(region: "GB").offers.isEmpty, "nothing claimed for a region TMDB doesn't list")
     }
 
     private static func checkTokenAndPolicy() {
@@ -163,6 +174,132 @@ enum SelfCheck {
                                     savedAt: Date().addingTimeInterval(-policy.endedSeries - 60))
         expect(!entry.isFresh(policy), "an old entry is stale")
         expect(policy.maximumAge <= 183 * 24 * 3600, "nothing kept past six months (TMDB terms)")
+    }
+
+    private static func preview(_ id: String) -> MetaPreview {
+        MetaPreview(id: id, type: "movie", name: id, poster: "p", background: "b", logo: nil, description: "d",
+                    releaseInfo: "2020", imdbRating: nil, genres: [], runtime: nil, trailerId: nil)
+    }
+
+    /// Home rows as data: sources save and read back, and a title shows in one row only.
+    private static func checkCatalogs() {
+        // Every row shares the same 10 titles and has 10 of its own.
+        let shared = (0..<10).map { preview("tt-shared-\($0)") }
+        var results: [String: [MetaPreview]] = [:]
+        for spec in HomeFeed.topSpecs + HomeFeed.restSpecs {
+            results[spec.id] = shared + (0..<10).map { preview("tt-\(spec.id)-\($0)") }
+        }
+        let (top, rest) = HomeFeed.sections(results)
+        var seen: [String: String] = [:]
+        var repeats: [String] = []
+        for row in top + rest where row.style != .ranked {
+            for item in row.items {
+                if let first = seen[item.id] { repeats.append("\(item.id) in \(first) and \(row.id)") }
+                seen[item.id] = seen[item.id] ?? row.id
+            }
+        }
+        expect(repeats.isEmpty, "no title in two rows: \(repeats.prefix(3))")
+        expect(top.count + rest.count == (HomeFeed.topSpecs + HomeFeed.restSpecs).count, "every row kept")
+
+        // Saved rows read back through the Stremio decoder.
+        let item = MetaPreview(id: "tt1", type: "series", name: "N", poster: "p", background: nil, logo: "l",
+                               description: nil, releaseInfo: "2021", imdbRating: "8.0", genres: ["Drama"],
+                               runtime: nil, trailerId: "yt")
+        if let data = try? JSONEncoder().encode([item]), let back = try? JSONDecoder().decode([MetaPreview].self, from: data) {
+            expect(back == [item], "a saved row reads back unchanged")
+        } else {
+            expect(false, "a saved row encodes and decodes")
+        }
+        let source = CatalogSource.tmdbDiscover(kind: "movie", query: ["b": "2", "a": "1"])
+        if let data = try? JSONEncoder().encode(source), let back = try? JSONDecoder().decode(CatalogSource.self, from: data) {
+            expect(back == source && back.cacheKey == "tmdb/discover/movie/a=1&b=2", "a source saves, with a stable key")
+        } else {
+            expect(false, "a source encodes and decodes")
+        }
+
+        expect(TMDBGenres.names([10765, 878], tv: true) == ["Sci-Fi", "Fantasy"], "TMDB genres in Cinemeta's names")
+        expect(TMDBGenres.names([878], tv: false) == ["Sci-Fi"], "Science Fiction is Sci-Fi")
+
+        // Addon catalogs: genres and paging only when the manifest lists them.
+        let manifest = """
+        {"type": "movie", "id": "c", "name": "C",
+         "extra": [{"name": "genre", "options": ["Action", "Drama"]}, {"name": "skip"}]}
+        """
+        let plain = """
+        {"type": "movie", "id": "d", "name": "D"}
+        """
+        let rich = try? JSONDecoder().decode(StremioCatalog.self, from: Data(manifest.utf8))
+        let bare = try? JSONDecoder().decode(StremioCatalog.self, from: Data(plain.utf8))
+        expect(rich?.supportsSkip == true && rich?.genreOptions == ["Action", "Drama"], "addon genres and paging read")
+        expect(bare?.supportsSkip == false && bare?.genreOptions == [] && bare?.isBrowsable == true, "plain catalog stays plain")
+    }
+
+    /// Taste from history, and the ranking that uses it.
+    private static func checkRecommendations() {
+        let now = Date()
+        var finished = WatchedStore.Record()
+        finished.videos = ["tt-done"]
+        finished.changed = now
+        var oldShow = WatchedStore.Record()
+        oldShow.videos = ["tt-old:1:1", "tt-old:1:2"]
+        oldShow.changed = now.addingTimeInterval(-365 * 86400)
+        let stale = WatchStore.Entry(ref: VideoRef(type: "movie", metaId: "tt-quit", videoId: "tt-quit", name: "Quit",
+                                                   poster: nil, episodeLabel: nil),
+                                     position: 300, duration: 6000, updated: now.addingTimeInterval(-40 * 86400))
+        let signals = TasteSignals.collect(records: ["tt-done": finished, "tt-old": oldShow], watching: [stale],
+                                           list: [MetaRef(id: "tt-list", type: "movie", name: "L", poster: nil)],
+                                           library: [], abandoned: ["tt-quit"], now: now)
+        let weight = Dictionary(signals.map { ($0.metaId, $0.weight) }, uniquingKeysWith: +)
+        expect((weight["tt-done"] ?? 0) > (weight["tt-list"] ?? 0), "a finished film counts more than a saved one")
+        expect((weight["tt-quit"] ?? 0) < 0, "an abandoned title counts against")
+        expect((weight["tt-old"] ?? 0) < 2.4 / 4, "a year-old series has faded")
+        expect(signals.first(where: { $0.metaId == "tt-old" })?.type == "series", "episodes mean a series")
+
+        let metas: [String: StremioMeta] = [
+            "tt-done": StremioMeta(id: "tt-done", type: "movie", name: "A", releaseInfo: "2019", genres: ["Sci-Fi", "Thriller"]),
+            "tt-quit": StremioMeta(id: "tt-quit", type: "movie", name: "Q", genres: ["Romance"]),
+        ]
+        let profile = TasteProfile.build(signals, metas: metas, extras: ["tt-done": MetaExtras(originalLanguage: "en")])
+        expect(profile.genres["Sci-Fi"] == 1, "favourite genre tops out at 1")
+        expect((profile.genres["Romance"] ?? 0) < 0, "abandoned genre goes negative")
+        expect(profile.topGenres(1) == ["Sci-Fi"] || profile.topGenres(1) == ["Thriller"], "top genre")
+        expect(profile.decades[2010] == 1, "decade")
+
+        func candidate(_ id: String, _ genres: [String], vote: Double, votes: Int) -> Candidate {
+            Candidate(preview: MetaPreview(id: id, type: "movie", name: id, poster: "p", background: nil, logo: nil,
+                                           description: nil, releaseInfo: "2020", imdbRating: nil, genres: genres,
+                                           runtime: nil, trailerId: nil),
+                      voteAverage: vote, voteCount: votes, popularity: 50, language: "en")
+        }
+        let ranked = RecommendationRanker.rank([
+            candidate("tt-romcom", ["Romance"], vote: 7.5, votes: 5000),
+            candidate("tt-scifi", ["Sci-Fi"], vote: 7.5, votes: 5000),
+            candidate("tt-done", ["Sci-Fi"], vote: 9, votes: 9000),
+            candidate("tt-scifi", ["Sci-Fi"], vote: 7.5, votes: 5000),
+        ], profile: profile, excluding: ["tt-done"], limit: 10)
+        expect(ranked.map(\.id) == ["tt-scifi", "tt-romcom"], "matching genre first, seen left out, no repeats: \(ranked.map(\.id))")
+        let fewVotes = RecommendationRanker.score(candidate("a", [], vote: 9.5, votes: 10), profile: TasteProfile())
+        let manyVotes = RecommendationRanker.score(candidate("b", [], vote: 8.2, votes: 20000), profile: TasteProfile())
+        expect(manyVotes > fewVotes, "a rating from many votes beats one from few")
+    }
+
+    /// Search: one list, merged on IMDb id only, best match first.
+    private static func checkSearch() {
+        func item(_ id: String, _ name: String, poster: String? = "p") -> MetaPreview {
+            MetaPreview(id: id, type: "movie", name: name, poster: poster, background: nil, logo: nil, description: nil,
+                        releaseInfo: nil, imdbRating: nil, genres: [], runtime: nil, trailerId: nil)
+        }
+        expect(UnifiedSearch.match("The Office", "the office") == 1, "exact match ignores case")
+        expect(UnifiedSearch.match("Amélie", "amelie") == 1, "and accents")
+        expect(UnifiedSearch.match("The Office (UK)", "the office") > UnifiedSearch.match("Office Space", "the office"),
+               "prefix beats partial")
+        let merged = UnifiedSearch.merge("dune", [
+            [item("tt2", "Dune: Part Two"), item("tt1", "Dune", poster: nil)],
+            [item("tt1", "Dune"), item("tt3", "Dune")],
+        ])
+        expect(merged.map(\.id) == ["tt1", "tt3", "tt2"], "exact names first, found twice ranks higher: \(merged.map(\.id))")
+        expect(merged.first?.poster == "p", "a merged title keeps the artwork another source had")
+        expect(merged.filter { $0.name == "Dune" }.count == 2, "same name, different id: two results")
     }
 }
 #endif

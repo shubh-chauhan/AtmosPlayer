@@ -20,6 +20,8 @@ enum MetaHTTP {
         return URLSession(configuration: config)
     }()
 
+    static let gate = RequestGate(limit: 8)
+
     /// The body of a 200 answer. Network errors, 429 and 5xx are tried once more.
     static func data(_ url: URL, session: URLSession = session, attempts: Int = 2) async -> Data? {
         await data(URLRequest(url: url), session: session, attempts: attempts)
@@ -28,6 +30,10 @@ enum MetaHTTP {
     /// As above, for a request with headers. Each retry waits twice as long as the last
     /// (0.6 s, 1.2 s…), or as long as a 429's Retry-After asks (up to 10 s).
     static func data(_ request: URLRequest, session: URLSession = session, attempts: Int = 2) async -> Data? {
+        // At most a handful of metadata requests in flight, so opening Home (two dozen lists)
+        // never floods the connection or a service's rate limit.
+        await gate.enter()
+        defer { Task { await gate.leave() } }
         var wait: Double = 0.6
         for attempt in 0..<attempts {
             if attempt > 0 {
@@ -368,7 +374,7 @@ enum MetaResolver {
         let key = key(ref)
         let saved = await MetaCache.entry(key)
         if let saved, saved.isFresh() {
-            if saved.extras?.tmdbId == nil { loadExtras(ref) }
+            if saved.extras?.tmdbId == nil || !(saved.extras?.availability?.isFresh ?? false) { loadExtras(ref) }
             return saved.meta
         }
         let task: Task<(StremioMeta, [String: String])?, Never>
@@ -395,8 +401,15 @@ enum MetaResolver {
     static func extras(for ref: MetaRef) async -> MetaExtras? {
         let key = key(ref)
         let saved = await MetaCache.entry(key)
-        if let have = saved?.extras, have.tmdbId != nil { return have }
-        guard TMDB.isConfigured, ref.id.hasPrefix("tt") else { return saved?.extras }
+        let have: MetaExtras?
+        if let fromEntry = saved?.extras {
+            have = fromEntry
+        } else {
+            have = await MetaCache.savedExtras(key)
+        }
+        // Streaming availability changes; everything else keeps for as long as the entry.
+        if let have, have.tmdbId != nil, have.availability?.isFresh ?? false { return have }
+        guard TMDB.isConfigured, ref.id.hasPrefix("tt") else { return have }
         if let running = extrasInflight[key] { return await running.value }
         let task = Task<MetaExtras?, Never> {
             guard let found = await TMDB.find(imdb: ref.id), let details = await TMDB.details(found) else { return nil }
@@ -405,8 +418,8 @@ enum MetaResolver {
         extrasInflight[key] = task
         let fetched = await task.value
         extrasInflight[key] = nil
-        guard var extras = fetched else { return saved?.extras }
-        extras.provenance = saved?.extras?.provenance ?? [:]
+        guard var extras = fetched else { return have }
+        extras.provenance = have?.provenance ?? [:]
         await MetaCache.storeExtras(key, extras)
         return extras
     }

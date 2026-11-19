@@ -102,6 +102,8 @@ struct AppSettingsView: View {
 
     @State private var cacheCleared = false
     @State private var confirmClearWatch = false
+    @AppStorage(TMDB.regionKey) private var region = ""
+    private static let regions = ["US", "GB", "IN", "CA", "AU", "IE", "DE", "FR", "ES", "IT", "NL", "SE", "NO", "DK", "BR", "MX", "JP", "KR"]
 
     var body: some View {
         NavigationStack {
@@ -195,6 +197,21 @@ struct AppSettingsView: View {
                     Text("Streams")
                 } footer: {
                     Text("Filter by quality, HDR, audio, codec and source from the chips on the stream list. Your selection is remembered.")
+                }
+
+                if TMDB.isConfigured {
+                    Section {
+                        Picker("Region", selection: $region) {
+                            Text("Automatic (\(Locale.current.region?.identifier ?? "US"))").tag("")
+                            ForEach(Self.regions, id: \.self) { code in
+                                Text(Locale.current.localizedString(forRegionCode: code) ?? code).tag(code)
+                            }
+                        }
+                    } header: {
+                        Text("Where to Watch")
+                    } footer: {
+                        Text("Which country's streaming services title pages and Discover show. Data from JustWatch via TMDB; it's about licensing, not whether your addons have a stream.")
+                    }
                 }
 
                 Section("Storage") {

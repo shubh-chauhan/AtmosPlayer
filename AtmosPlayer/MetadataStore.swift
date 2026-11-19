@@ -95,11 +95,33 @@ enum MetaCache {
         }
     }
 
-    /// Updates only the extras of an entry already saved.
+    /// Updates the extras of a saved entry; a title never opened (a Home card) keeps its
+    /// extras on their own.
     static func storeExtras(_ key: String, _ extras: MetaExtras) async {
-        guard var entry = await entry(key) else { return }
+        guard var entry = await entry(key) else {
+            extrasOnly[key] = extras
+            let url = file("x/" + key)
+            Task.detached(priority: .utility) {
+                if let data = try? JSONEncoder().encode(extras) { try? data.write(to: url, options: .atomic) }
+            }
+            return
+        }
         entry.extras = extras
         store(key, entry)
+    }
+
+    private static var extrasOnly: [String: MetaExtras] = [:]
+
+    /// Extras saved for a title that has no saved entry.
+    static func savedExtras(_ key: String) async -> MetaExtras? {
+        if let hit = extrasOnly[key] { return hit }
+        let url = file("x/" + key)
+        let found = await Task.detached(priority: .userInitiated) { () -> MetaExtras? in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode(MetaExtras.self, from: data)
+        }.value
+        if let found { extrasOnly[key] = found }
+        return found
     }
 
     private static func remember(_ key: String, _ entry: Entry) {

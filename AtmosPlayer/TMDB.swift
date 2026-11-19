@@ -30,8 +30,23 @@ enum TMDB {
         return token.isEmpty ? nil : token
     }
 
-    /// Text language for TMDB answers. shortcut: English only, until localisation (phase 5).
-    static let language = "en-US"
+    /// The device's language ("fr", "hi"…), for TMDB's text and artwork.
+    static let languageCode: String = Locale.current.language.languageCode?.identifier ?? "en"
+
+    /// Text language for TMDB answers, as TMDB writes it ("en-US", "fr-FR"). Where TMDB has no
+    /// translation the text stays empty, and the details from Cinemeta (English) are kept.
+    static let language: String = {
+        guard let region = Locale.current.region?.identifier else { return languageCode }
+        return "\(languageCode)-\(region)"
+    }()
+
+    /// Where streaming availability is looked up: the region picked in Settings, else the
+    /// device's region.
+    static var region: String {
+        let picked = UserDefaults.standard.string(forKey: regionKey) ?? ""
+        return picked.isEmpty ? (Locale.current.region?.identifier ?? "US") : picked
+    }
+    static let regionKey = "tmdb.region"
 
     // MARK: Requests
 
@@ -91,13 +106,13 @@ enum TMDB {
         if let hit = recent[key], Date().timeIntervalSince(hit.at) < 600 { return hit.details }
         if let running = inflight[key] { return await running.value }
         let task = Task<Details?, Never> {
-            var append = ["credits", "external_ids", "images", "videos"]
+            var append = ["credits", "external_ids", "images", "videos", "watch/providers"]
             append += wanted.map { "season/\($0)" }
             let data = await get("/\(ref.kind.rawValue)/\(ref.id)", [
                 URLQueryItem(name: "language", value: language),
                 URLQueryItem(name: "append_to_response", value: append.joined(separator: ",")),
-                // Artwork in English or with no text at all ("null": textless backdrops).
-                URLQueryItem(name: "include_image_language", value: "en,null"),
+                // Artwork in your language, English, or with no text at all ("null": textless backdrops).
+                URLQueryItem(name: "include_image_language", value: Set([TMDB.languageCode, "en"]).sorted().joined(separator: ",") + ",null"),
             ])
             return data.flatMap { try? JSONDecoder().decode(Details.self, from: $0) }
         }
@@ -141,6 +156,16 @@ enum TMDB {
         }
         struct Season: Decodable { let season_number: Int?; let episodes: [LossyElement<Episode>]? }
         struct SeasonSummary: Decodable { let season_number: Int? }
+        struct Provider: Decodable { let provider_id: Int?; let provider_name: String?; let logo_path: String?; let display_priority: Int? }
+        struct RegionOffers: Decodable {
+            let link: String?
+            let flatrate: [LossyElement<Provider>]?
+            let free: [LossyElement<Provider>]?
+            let ads: [LossyElement<Provider>]?
+            let rent: [LossyElement<Provider>]?
+            let buy: [LossyElement<Provider>]?
+        }
+        struct WatchProviders: Decodable { let results: [String: RegionOffers]? }
 
         let id: Int
         // Movies use title/release_date/runtime; series name/first_air_date/episode_run_time.
@@ -168,6 +193,7 @@ enum TMDB {
         let external_ids: ExternalIDs?
         let images: Images?
         let videos: Videos?
+        let watchProviders: WatchProviders?
         /// "season/1", "season/2"… from append_to_response.
         let appendedSeasons: [Int: Season]
 
@@ -212,6 +238,7 @@ enum TMDB {
             external_ids = value("external_ids")
             images = value("images")
             videos = value("videos")
+            watchProviders = value("watch/providers")
             var appended: [Int: Season] = [:]
             for key in plain.allKeys where key.stringValue.hasPrefix("season/") {
                 if let number = Int(key.stringValue.dropFirst("season/".count)),
@@ -246,8 +273,10 @@ extension TMDB.Details {
         Self.image(Self.best(images?.backdrops, where: { _ in true })?.file_path ?? backdrop_path, size: "w1280")
     }
 
+    /// A logo in your language when there is one, else English.
     var logo: String? {
-        Self.image(Self.best(images?.logos, where: { $0.iso_639_1 == "en" })?.file_path, size: "w500")
+        let own = Self.best(images?.logos, where: { $0.iso_639_1 == TMDB.languageCode })
+        return Self.image((own ?? Self.best(images?.logos, where: { $0.iso_639_1 == "en" }))?.file_path, size: "w500")
     }
 
     var poster: String? {
@@ -314,6 +343,22 @@ extension TMDB.Details {
             language: (spoken_languages ?? []).compactMap(\.value?.english_name).first)
     }
 
+    /// Where it streams, rents or sells in `region`, as TMDB lists it (data from JustWatch).
+    func availability(region: String) -> MetaExtras.Availability {
+        let offers = watchProviders?.results?[region]
+        func list(_ providers: [LossyElement<Provider>]?, _ kind: MetaExtras.Offer.Kind) -> [MetaExtras.Offer] {
+            (providers ?? []).compactMap(\.value)
+                .sorted { ($0.display_priority ?? .max) < ($1.display_priority ?? .max) }
+                .compactMap { p in
+                    guard let id = p.provider_id, let name = p.provider_name else { return nil }
+                    return MetaExtras.Offer(providerId: id, name: name, logo: Self.image(p.logo_path, size: "w92"), kind: kind)
+                }
+        }
+        let all = list(offers?.flatrate, .subscription) + list(offers?.free, .free) + list(offers?.ads, .ads)
+            + list(offers?.rent, .rent) + list(offers?.buy, .buy)
+        return MetaExtras.Availability(region: region, link: offers?.link, offers: all, checkedAt: Date())
+    }
+
     /// The details the app's model has no place for.
     func extras(imdb: String) -> MetaExtras {
         let castList = (credits?.cast ?? []).compactMap(\.value)
@@ -342,7 +387,7 @@ extension TMDB.Details {
             cast: Array(castList), crew: crewList,
             tmdbRating: (vote_count ?? 0) > 0 ? vote_average : nil, tmdbVotes: vote_count,
             textlessBackdrop: textlessBackdrop, backdrop: anyBackdrop, logo: logo, poster: poster,
-            provenance: [:])
+            provenance: [:], availability: availability(region: TMDB.region))
     }
 }
 
@@ -382,6 +427,29 @@ struct MetaExtras: Codable, Equatable {
     var poster: String?
     /// Field name → the source that filled it (only fields the first source left empty).
     var provenance: [String: String] = [:]
+    /// Where the title is licensed to stream, rent or buy. This is not whether your addons
+    /// have a stream for it: the two are unrelated.
+    var availability: Availability?
+
+    struct Availability: Codable, Equatable {
+        let region: String
+        /// TMDB's "where to watch" page for the title.
+        let link: String?
+        let offers: [Offer]
+        let checkedAt: Date
+
+        /// Older than this, it's looked up again.
+        static let freshFor: TimeInterval = 12 * 3600
+        var isFresh: Bool { Date().timeIntervalSince(checkedAt) < Self.freshFor && region == TMDB.region }
+    }
+
+    struct Offer: Codable, Equatable, Hashable {
+        enum Kind: String, Codable { case subscription, free, ads, rent, buy }
+        let providerId: Int
+        let name: String
+        let logo: String?
+        let kind: Kind
+    }
 }
 
 // MARK: - Request gate

@@ -128,6 +128,9 @@ struct StremioCatalog: Decodable {
     let name: String?
     let requiredExtras: [String]
     let supportsSearch: Bool
+    /// The addon pages this catalog with `skip=` and filters it with `genre=` (from these).
+    let supportsSkip: Bool
+    let genreOptions: [String]
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -140,17 +143,22 @@ struct StremioCatalog: Decodable {
 
         var required: [String] = c.stringArray(AnyKey("extraRequired")) ?? []
         var supported: [String] = c.stringArray(AnyKey("extraSupported")) ?? []
+        var genres: [String] = c.stringArray(AnyKey("genres")) ?? []
         for extra in c.lossyArray(Extra.self, AnyKey("extra")) {
             supported.append(extra.name)
             if extra.isRequired { required.append(extra.name) }
+            if extra.name == "genre", !extra.options.isEmpty { genres = extra.options }
         }
         requiredExtras = required
         supportsSearch = supported.contains("search")
+        supportsSkip = supported.contains("skip")
+        genreOptions = supported.contains("genre") ? genres : []
     }
 
     private struct Extra: Decodable {
         let name: String
         let isRequired: Bool
+        let options: [String]
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: AnyKey.self)
             guard let name = c.lossyString(AnyKey("name")) else {
@@ -158,6 +166,7 @@ struct StremioCatalog: Decodable {
             }
             self.name = name
             isRequired = c.lossyBool(AnyKey("isRequired")) ?? false
+            options = c.stringArray(AnyKey("options")) ?? []
         }
     }
 
@@ -533,9 +542,14 @@ enum StremioClient {
     }
 
     static func catalog(_ addon: InstalledAddon, _ catalog: StremioCatalog, search: String? = nil,
+                        genre: String? = nil, skip: Int = 0,
                         timeout: TimeInterval = 25) async throws -> [MetaPreview] {
-        var extra = ""
-        if let search { extra = "/search=\(encode(search))" }
+        // Extras only when the catalog lists them (an addon may reject ones it doesn't know).
+        var parts: [String] = []
+        if let search { parts.append("search=\(encode(search))") }
+        if let genre, !catalog.genreOptions.isEmpty { parts.append("genre=\(encode(genre))") }
+        if skip > 0, catalog.supportsSkip { parts.append("skip=\(skip)") }
+        let extra = parts.isEmpty ? "" : "/" + parts.joined(separator: "&")
         let url = try resourceURL(addon, "catalog", catalog.type, catalog.id, extra: extra)
         return try JSONDecoder().decode(CatalogResponse.self, from: try await get(url, timeout: timeout)).metas
     }

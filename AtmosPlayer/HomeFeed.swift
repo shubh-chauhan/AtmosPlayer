@@ -120,7 +120,7 @@ enum HomeDiskCache {
 
 /// One row of Home.
 struct HomeSection: Identifiable, Equatable {
-    enum Style: Equatable { case ranked, wide, poster }
+    enum Style: String, Codable, Hashable { case ranked, wide, poster }
 
     let id: String
     let title: String
@@ -138,6 +138,8 @@ struct CatalogRoute: Hashable {
     var genre: String? = nil
     /// Genre pages can switch between movies and series.
     var allowsTypeSwitch = false
+    /// Any source other than Cinemeta (a TMDB list, an addon catalog); nil for Cinemeta's own.
+    var source: CatalogSource? = nil
 }
 
 /// Everything above and below Continue Watching / My List. Shared, so switching tabs never
@@ -155,62 +157,117 @@ final class HomeFeed: ObservableObject {
     private var lastLoad: Date?
     private var suggestionFor: String?
 
-    private struct Spec {
+    /// One row of Home, as data: where its titles come from and how it looks.
+    struct Spec: Codable, Hashable {
         let id: String
         let title: String
         let style: HomeSection.Style
-        let type: String
-        let catalog: String
-        var genre: String? = nil
+        let source: CatalogSource
         var seeAll: Bool = true
+        /// Its titles can be featured in the hero.
+        var hero: Bool = false
     }
 
     private static var year: String { String(Calendar.current.component(.year, from: Date())) }
 
-    private static var topSpecs: [Spec] {
+    /// Before My List (Top 10s and what's new) and after the genre tiles (everything else).
+    /// TMDB's lists when the build has a TMDB token; Cinemeta's otherwise.
+    static var topSpecs: [Spec] { TMDB.isConfigured ? tmdbTopSpecs : cinemetaTopSpecs }
+    static var restSpecs: [Spec] { TMDB.isConfigured ? tmdbRestSpecs : cinemetaRestSpecs }
+
+    static var cinemetaTopSpecs: [Spec] {
         [
-            Spec(id: "top-movies", title: "Top 10 Movies Today", style: .ranked, type: "movie", catalog: "top"),
-            Spec(id: "new-movies", title: "New Releases", style: .wide, type: "movie", catalog: "year", genre: Self.year),
-            Spec(id: "top-series", title: "Top 10 Series Today", style: .ranked, type: "series", catalog: "top"),
-            Spec(id: "new-series", title: "New Series", style: .wide, type: "series", catalog: "year", genre: Self.year),
+            Spec(id: "top-movies", title: "Top 10 Movies Today", style: .ranked, source: .cinemeta(type: "movie", id: "top", genre: nil), hero: true),
+            Spec(id: "new-movies", title: "New Releases", style: .wide, source: .cinemeta(type: "movie", id: "year", genre: Self.year), hero: true),
+            Spec(id: "top-series", title: "Top 10 Series Today", style: .ranked, source: .cinemeta(type: "series", id: "top", genre: nil), hero: true),
+            Spec(id: "new-series", title: "New Series", style: .wide, source: .cinemeta(type: "series", id: "year", genre: Self.year), hero: true),
         ]
     }
 
-    private static var restSpecs: [Spec] {
+    static var cinemetaRestSpecs: [Spec] {
         [
-            Spec(id: "g-action", title: "Action & Adventure", style: .poster, type: "movie", catalog: "top", genre: "Action"),
-            Spec(id: "g-comedy", title: "Comedies", style: .poster, type: "movie", catalog: "top", genre: "Comedy"),
-            Spec(id: "acclaimed-series", title: "Acclaimed Series", style: .wide, type: "series", catalog: "imdbRating"),
-            Spec(id: "g-scifi", title: "Sci-Fi Worlds", style: .poster, type: "movie", catalog: "top", genre: "Sci-Fi"),
-            Spec(id: "g-thriller", title: "Edge-of-Your-Seat Thrillers", style: .poster, type: "movie", catalog: "top", genre: "Thriller"),
-            Spec(id: "g-crime-series", title: "Crime Series", style: .poster, type: "series", catalog: "top", genre: "Crime"),
-            Spec(id: "g-animation", title: "Animated Favourites", style: .poster, type: "movie", catalog: "top", genre: "Animation"),
-            Spec(id: "acclaimed-movies", title: "Critically Acclaimed Films", style: .wide, type: "movie", catalog: "imdbRating"),
-            Spec(id: "g-horror", title: "Horror Nights", style: .poster, type: "movie", catalog: "top", genre: "Horror"),
-            Spec(id: "g-drama-series", title: "Binge-Worthy Dramas", style: .poster, type: "series", catalog: "top", genre: "Drama"),
-            Spec(id: "g-romance", title: "Romance", style: .poster, type: "movie", catalog: "top", genre: "Romance"),
-            Spec(id: "g-family", title: "Family Movie Night", style: .poster, type: "movie", catalog: "top", genre: "Family"),
-            Spec(id: "g-docs", title: "Documentaries", style: .poster, type: "movie", catalog: "top", genre: "Documentary"),
+            Spec(id: "g-action", title: "Action & Adventure", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Action")),
+            Spec(id: "g-comedy", title: "Comedies", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Comedy")),
+            Spec(id: "acclaimed-series", title: "Acclaimed Series", style: .wide, source: .cinemeta(type: "series", id: "imdbRating", genre: nil)),
+            Spec(id: "g-scifi", title: "Sci-Fi Worlds", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Sci-Fi")),
+            Spec(id: "g-thriller", title: "Edge-of-Your-Seat Thrillers", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Thriller")),
+            Spec(id: "g-crime-series", title: "Crime Series", style: .poster, source: .cinemeta(type: "series", id: "top", genre: "Crime")),
+            Spec(id: "g-animation", title: "Animated Favourites", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Animation")),
+            Spec(id: "acclaimed-movies", title: "Critically Acclaimed Films", style: .wide, source: .cinemeta(type: "movie", id: "imdbRating", genre: nil)),
+            Spec(id: "g-horror", title: "Horror Nights", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Horror")),
+            Spec(id: "g-drama-series", title: "Binge-Worthy Dramas", style: .poster, source: .cinemeta(type: "series", id: "top", genre: "Drama")),
+            Spec(id: "g-romance", title: "Romance", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Romance")),
+            Spec(id: "g-family", title: "Family Movie Night", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Family")),
+            Spec(id: "g-docs", title: "Documentaries", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Documentary")),
         ]
+    }
+
+    /// TMDB discover queries share these: enough votes that a title is properly rated.
+    private static func discover(_ kind: String, _ extra: [String: String]) -> CatalogSource {
+        var query = ["sort_by": "popularity.desc", "vote_count.gte": "200", "include_adult": "false"]
+        query.merge(extra) { _, new in new }
+        return .tmdbDiscover(kind: kind, query: query)
+    }
+
+    static var tmdbTopSpecs: [Spec] {
+        [
+            Spec(id: "trending", title: "Trending Worldwide", style: .wide, source: .tmdbTrending(media: "all", window: "week"), hero: true),
+            Spec(id: "top-movies", title: "Top 10 Movies Today", style: .ranked, source: .cinemeta(type: "movie", id: "top", genre: nil), hero: true),
+            Spec(id: "top-series", title: "Top 10 Series Today", style: .ranked, source: .cinemeta(type: "series", id: "top", genre: nil), hero: true),
+            Spec(id: "popular-movies", title: "Popular Movies", style: .poster, source: .tmdbList(kind: "movie", list: "popular")),
+            Spec(id: "popular-series", title: "Popular Series", style: .poster, source: .tmdbList(kind: "tv", list: "popular")),
+        ]
+    }
+
+    static var tmdbRestSpecs: [Spec] {
+        let today = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
+        var list: [Spec] = [
+            Spec(id: "acclaimed-movies", title: "Critically Acclaimed Movies", style: .wide, source: .tmdbList(kind: "movie", list: "top_rated")),
+            Spec(id: "acclaimed-series", title: "Critically Acclaimed Series", style: .wide, source: .tmdbList(kind: "tv", list: "top_rated")),
+            // Well rated, but seen by few: fewer votes than a hit gets.
+            Spec(id: "hidden-gems", title: "Hidden Gems", style: .poster,
+                 source: discover("movie", ["sort_by": "vote_average.desc", "vote_average.gte": "7.2",
+                                            "vote_count.gte": "150", "vote_count.lte": "1500",
+                                            "primary_release_date.gte": "1990-01-01", "without_genres": "99,10770"])),
+            Spec(id: "recent", title: "Recently Released", style: .wide, source: .tmdbList(kind: "movie", list: "now_playing"), hero: true),
+            Spec(id: "upcoming", title: "Coming Soon", style: .poster,
+                 source: discover("movie", ["primary_release_date.gte": today, "sort_by": "popularity.desc",
+                                            "vote_count.gte": "0", "with_release_type": "2|3"])),
+        ]
+        list += StreamingPlatform.all.prefix(4).map { platform in
+            Spec(id: "originals-\(platform.id)", title: "\(platform.name) Originals", style: .poster, source: platform.originals)
+        }
+        list += [
+            Spec(id: "g-scifi", title: "Sci-Fi & Fantasy", style: .poster, source: discover("movie", ["with_genres": "878|14"])),
+            Spec(id: "g-crime", title: "Crime & Thriller", style: .poster, source: discover("movie", ["with_genres": "80|53"])),
+            Spec(id: "g-action", title: "Action & Adventure", style: .poster, source: discover("movie", ["with_genres": "28|12"])),
+            Spec(id: "international", title: "International Cinema", style: .wide,
+                 source: discover("movie", ["with_origin_country": "KR|JP|FR|ES|IN|IT|DE|DK|SE|MX|BR|CN|HK",
+                                            "vote_count.gte": "500", "sort_by": "vote_average.desc"])),
+            Spec(id: "g-comedy", title: "Comedies", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Comedy")),
+            Spec(id: "g-crime-series", title: "Crime Series", style: .poster, source: .cinemeta(type: "series", id: "top", genre: "Crime")),
+            Spec(id: "g-animation", title: "Animated Favourites", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Animation")),
+            Spec(id: "g-horror", title: "Horror Nights", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Horror")),
+            Spec(id: "g-drama-series", title: "Binge-Worthy Dramas", style: .poster, source: .cinemeta(type: "series", id: "top", genre: "Drama")),
+            Spec(id: "g-romance", title: "Romance", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Romance")),
+            Spec(id: "g-family", title: "Family Movie Night", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Family")),
+            Spec(id: "g-docs", title: "Documentaries", style: .poster, source: .cinemeta(type: "movie", id: "top", genre: "Documentary")),
+        ]
+        return list
     }
 
     private init() {
         // Seed from disk so the first frame already has the storefront.
-        func seeded(_ specs: [Spec]) -> [HomeSection] {
-            specs.compactMap { spec -> HomeSection? in
-                guard let items = Cinemeta.cachedCatalog(type: spec.type, id: spec.catalog, genre: spec.genre) else {
-                    return nil
-                }
-                return Self.section(spec, items)
-            }
+        // shortcut: these small reads stay on the main thread so the first frame has rows;
+        // move them off it if Home ever grows past a few dozen saved rows.
+        var saved: [String: [MetaPreview]] = [:]
+        for spec in Self.topSpecs + Self.restSpecs {
+            if let items = spec.source.cached() { saved[spec.id] = items }
         }
-        top = seeded(Self.topSpecs)
-        rest = seeded(Self.restSpecs)
-        let specs = Self.topSpecs
-        hero = Self.heroItems(Self.heroPools { id in
-            guard let spec = specs.first(where: { $0.id == id }) else { return [] }
-            return Cinemeta.cachedCatalog(type: spec.type, id: spec.catalog, genre: spec.genre) ?? []
-        })
+        let (newTop, newRest) = Self.sections(saved)
+        top = newTop
+        rest = newRest
+        hero = Self.heroItems(Self.heroPools { saved[$0] ?? [] })
         Task { await self.pruneHero() }
     }
 
@@ -251,20 +308,17 @@ final class HomeFeed: ObservableObject {
         loading = true
         defer { loading = false }
 
-        let specs = Self.topSpecs + Self.restSpecs
-        let results = await withTaskGroup(of: (String, [MetaPreview]).self) { group in
-            for spec in specs {
-                group.addTask {
-                    (spec.id, await Cinemeta.catalog(type: spec.type, id: spec.catalog, genre: spec.genre))
-                }
-            }
-            var out: [String: [MetaPreview]] = [:]
-            for await (id, items) in group { out[id] = items }
-            return out
+        var results = await Self.fetch(Self.topSpecs + Self.restSpecs)
+        // TMDB unreachable (or the token rejected): Cinemeta's rows instead, so Home isn't bare.
+        if TMDB.isConfigured,
+           (Self.topSpecs + Self.restSpecs).filter(\.source.needsTMDB).allSatisfy({ (results[$0.id] ?? []).isEmpty }) {
+            results.merge(await Self.fetch(Self.cinemetaTopSpecs + Self.cinemetaRestSpecs.filter { results[$0.id] == nil || results[$0.id]!.isEmpty })) { old, new in old.isEmpty ? new : old }
+            usingFallback = true
+        } else {
+            usingFallback = false
         }
 
-        let newTop = Self.topSpecs.compactMap { Self.section($0, results[$0.id] ?? []) }
-        let newRest = Self.restSpecs.compactMap { Self.section($0, results[$0.id] ?? []) }
+        let (newTop, newRest) = Self.sections(results, fallback: usingFallback)
         guard !newTop.isEmpty || !newRest.isEmpty else {
             failed = isEmpty
             return
@@ -301,6 +355,45 @@ final class HomeFeed: ObservableObject {
         }
     }
 
+    /// Set when TMDB answered nothing and Cinemeta's rows stand in.
+    private var usingFallback = false
+
+    /// Every row's first page at once (TMDB's through its own request gate).
+    private static func fetch(_ specs: [Spec]) async -> [String: [MetaPreview]] {
+        await withTaskGroup(of: (String, [MetaPreview]).self) { group in
+            for spec in specs {
+                group.addTask { @MainActor in (spec.id, await spec.source.load()) }
+            }
+            var out: [String: [MetaPreview]] = [:]
+            for await (id, items) in group { out[id] = items }
+            return out
+        }
+    }
+
+    /// The rows in order, each title shown in at most one row: a title already in an earlier
+    /// row is left out of later ones, unless that would leave a row too short (the Top 10s
+    /// keep their full lists either way).
+    static func sections(_ results: [String: [MetaPreview]], fallback: Bool = false) -> ([HomeSection], [HomeSection]) {
+        let topSpecs = fallback ? cinemetaTopSpecs : Self.topSpecs
+        let restSpecs = fallback ? cinemetaRestSpecs : Self.restSpecs
+        var seen = Set<String>()
+        func build(_ specs: [Spec]) -> [HomeSection] {
+            specs.compactMap { spec -> HomeSection? in
+                guard let row = Self.section(spec, results[spec.id] ?? []) else { return nil }
+                if spec.style == .ranked {
+                    seen.formUnion(row.items.map(\.id))
+                    return row
+                }
+                let fresh = row.items.filter { !seen.contains($0.id) }
+                let items = fresh.count >= 8 ? fresh : row.items
+                seen.formUnion(items.map(\.id))
+                return HomeSection(id: row.id, title: row.title, style: row.style, items: items, seeAll: row.seeAll)
+            }
+        }
+        let top = build(topSpecs)
+        return (top, build(restSpecs))
+    }
+
     private static func section(_ spec: Spec, _ items: [MetaPreview]) -> HomeSection? {
         var list = items.filter { $0.poster != nil }
         switch spec.style {
@@ -309,9 +402,14 @@ final class HomeFeed: ObservableObject {
         case .poster: list = Array(list.prefix(20))
         }
         guard list.count >= 4 else { return nil }
-        let seeAll: CatalogRoute? = spec.style == .ranked || !spec.seeAll ? nil
-            : CatalogRoute(title: spec.title, type: spec.type, catalogId: spec.catalog, genre: spec.genre,
-                           allowsTypeSwitch: false)
+        let seeAll: CatalogRoute?
+        if spec.style == .ranked || !spec.seeAll {
+            seeAll = nil
+        } else if case let .cinemeta(type, id, genre) = spec.source {
+            seeAll = CatalogRoute(title: spec.title, type: type, catalogId: id, genre: genre, allowsTypeSwitch: false)
+        } else {
+            seeAll = CatalogRoute(title: spec.title, type: "", catalogId: "", source: spec.source)
+        }
         return HomeSection(id: spec.id, title: spec.title, style: spec.style, items: list, seeAll: seeAll)
     }
 
@@ -344,6 +442,6 @@ final class HomeFeed: ObservableObject {
     }
 
     private static func heroPools(_ lookup: (String) -> [MetaPreview]) -> [[MetaPreview]] {
-        [lookup("top-movies"), lookup("new-movies"), lookup("top-series"), lookup("new-series")]
+        (topSpecs + restSpecs).filter(\.hero).map { lookup($0.id) }
     }
 }
