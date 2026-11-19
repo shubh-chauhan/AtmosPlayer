@@ -568,6 +568,13 @@ struct HeroCarousel: View {
         .onChange(of: items.map(\.id)) { _, ids in
             if let current, !ids.contains(current) { self.current = nil }
         }
+        // The pages either side are ready (decoded and cropped) before you swipe to them.
+        .task(id: activeId) {
+            guard let index = items.firstIndex(where: { $0.id == activeId }), items.count > 1 else { return }
+            for neighbour in [items[(index + 1) % items.count], items[(index + items.count - 1) % items.count]] {
+                await ImagePipeline.shared.prefetch(neighbour.background ?? neighbour.poster, maxPixel: 1800, focused: true)
+            }
+        }
         // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
         // playing or in the background.
         .task(id: TimerKey(page: activeId, cycle: cycle, paused: paused, trailer: trailerShowing)) {
@@ -655,7 +662,7 @@ struct HeroCard: View {
                 // A slow push-in on the page you're looking at.
                 Color.clear
                     .overlay {
-                        RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
+                        RemoteImage(url: item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "", focused: true)
                             .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
                             .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
                     }

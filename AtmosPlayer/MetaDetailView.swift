@@ -128,7 +128,7 @@ struct MetaDetailView: View {
             let side = max(outer.safeAreaInsets.leading, outer.safeAreaInsets.trailing)
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    hero(height: heroHeight, side: side, topInset: outer.safeAreaInsets.top)
+                    hero(height: heroHeight, side: side)
                     VStack(alignment: .leading, spacing: 30) {
                         if !wide { descriptionBlock }
                         if let meta {
@@ -218,7 +218,7 @@ struct MetaDetailView: View {
 
     // MARK: Hero
 
-    private func hero(height: CGFloat, side: CGFloat, topInset: CGFloat) -> some View {
+    private func hero(height: CGFloat, side: CGFloat) -> some View {
         GeometryReader { geo in
             let minY = geo.frame(in: .scrollView).minY
             let stretch = max(minY, 0)
@@ -228,7 +228,9 @@ struct MetaDetailView: View {
             // shading all fill the room together (no seam where the top shade used to stop).
             ZStack(alignment: wide ? .bottomLeading : .bottom) {
                 // The backdrop scrolls a little slower than the page and fades into the wash below.
-                RemoteImage(url: background, maxPixel: 2000, placeholderSymbol: "")
+                // The size Home's big card decodes at on iPhone, so opening a title from it shows the same picture at once.
+                RemoteImage(url: background, maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800,
+                            placeholderSymbol: "", focused: true)
                     .frame(width: geo.size.width, height: height + stretch)
                     .overlay(alignment: .bottom) {
                         // A fixed size, scaled on pull-down, so the video never re-lays out mid-gesture.

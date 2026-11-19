@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WebKit
 
 // MARK: - Trailer previews
@@ -7,6 +8,10 @@ import WebKit
 // artwork, muted, cropped to fill the card. Trailers are YouTube videos (Cinemeta lists their
 // ids), played through YouTube's own embedded player. The video only fades in once it is
 // actually playing, so a slow or blocked trailer just leaves the artwork as it was.
+//
+// A trailer that has played is parked (paused, kept loaded) when its card scrolls away, the
+// page changes or you open the title, so coming back resumes it where it was instead of
+// loading it again.
 
 enum TrailerPreviews {
     static let key = "previews.trailers"
@@ -29,6 +34,64 @@ enum TrailerPreviews {
     static let origin: String = "https://" + (Bundle.main.bundleIdentifier ?? "com.atmosplayer.app").lowercased()
 }
 
+/// Players for trailers that have already started, paused and kept loaded, newest last.
+@MainActor
+final class TrailerPool {
+    static let shared = TrailerPool()
+
+    /// One in-memory store for every trailer, so YouTube's player scripts download once per
+    /// session; nothing is written to disk.
+    let dataStore = WKWebsiteDataStore.nonPersistent()
+
+    fileprivate struct Parked {
+        let id: String
+        let web: WKWebView
+        let handler: ScriptHandler
+    }
+
+    private var parked: [Parked] = []
+    /// Each paused player holds a few MB of video; three covers swiping back a page or two
+    /// and the title you just opened.
+    private let limit = 3
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { TrailerPool.shared.clear() }
+        }
+    }
+
+    func has(_ id: String?) -> Bool { parked.contains { $0.id == id } }
+
+    fileprivate func take(_ id: String) -> Parked? {
+        guard let index = parked.firstIndex(where: { $0.id == id }) else { return nil }
+        return parked.remove(at: index)
+    }
+
+    fileprivate func park(_ item: Parked) {
+        item.web.evaluateJavaScript("window.player && player.pauseVideo && player.pauseVideo()")
+        item.handler.target = nil
+        item.web.removeFromSuperview()
+        if let older = take(item.id) { Self.destroy(older.web) }
+        parked.append(item)
+        while parked.count > limit { Self.destroy(parked.removeFirst().web) }
+    }
+
+    func clear() {
+        parked.forEach { Self.destroy($0.web) }
+        parked.removeAll()
+    }
+
+    fileprivate static func destroy(_ web: WKWebView) {
+        web.evaluateJavaScript("window.player && player.stopVideo && player.stopVideo()")
+        web.configuration.userContentController.removeScriptMessageHandler(forName: "yt")
+        web.stopLoading()
+        web.loadHTMLString("", baseURL: nil)
+        web.removeFromSuperview()
+    }
+}
+
 /// The trailer layer for a big card. Put it right above the artwork, below the gradients.
 struct TrailerBackdrop: View {
     let youtubeId: String?
@@ -45,6 +108,10 @@ struct TrailerBackdrop: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var armed = false
     @State private var showing = false
+    /// The video is moving (reported by the player).
+    @State private var playing = false
+    /// This trailer was parked and is being resumed: no wait, and a quicker fade.
+    @State private var warm = false
     @State private var status = "waiting"
 
     private var wanted: Bool {
@@ -60,16 +127,18 @@ struct TrailerBackdrop: View {
         GeometryReader { geo in
             if armed, let youtubeId {
                 // Fill the card the way artwork does (crop, never letterbox), slightly
-                // oversized so YouTube's title bar and logo fall outside the card.
+                // oversized so a widescreen trailer's black bars fall outside the card.
                 let size = Self.fill(geo.size, scale: 1.3)
-                YouTubeLoop(videoId: youtubeId, muted: muted, onStatus: { status = $0 }) { playing in
-                    // A beat after it starts, so the first frames (and the player's title) are past.
+                YouTubeLoop(videoId: youtubeId, muted: muted, onStatus: { status = $0 }) { isPlaying in
+                    playing = isPlaying
+                    // A beat after it starts, so the first frames are past (none needed on a resume).
                     Task { @MainActor in
-                        if playing { try? await Task.sleep(nanoseconds: 450_000_000) }
+                        if isPlaying { try? await Task.sleep(nanoseconds: warm ? 80_000_000 : 450_000_000) }
                         guard armed else { return }
-                        withAnimation(.easeInOut(duration: playing ? 0.7 : 0.45)) { showing = playing }
+                        withAnimation(.easeInOut(duration: isPlaying ? (warm ? 0.35 : 0.7) : 0.45)) { showing = isPlaying }
                     }
                 }
+                .id(youtubeId)
                 .frame(width: size.width, height: size.height)
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
                 .opacity(showing ? 1 : 0)
@@ -89,16 +158,27 @@ struct TrailerBackdrop: View {
         .onChange(of: showing) { _, value in onShowing(value) }
         .task(id: Key(id: youtubeId, wanted: wanted)) {
             guard wanted else {
-                // Fade the video out first, then remove the player.
+                // Fade the video out first, then hand the player to the pool.
                 if showing {
                     withAnimation(.easeInOut(duration: 0.45)) { showing = false }
                     try? await Task.sleep(nanoseconds: 500_000_000)
+                    // Wanted again during the fade: the next run brings it back.
+                    guard !Task.isCancelled else { return }
                 }
                 armed = false
+                playing = false
                 return
             }
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled else { return }
+            // Came back during the fade-out: the player never left, so just show it again.
+            if armed && playing {
+                withAnimation(.easeInOut(duration: 0.35)) { showing = true }
+                return
+            }
+            warm = TrailerPool.shared.has(youtubeId)
+            if !warm {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+            }
             armed = true
         }
     }
@@ -114,6 +194,25 @@ struct TrailerBackdrop: View {
     }
 }
 
+/// Holds the web view and keeps it the size of the SwiftUI frame (a parked player is moved
+/// between hosts).
+private final class TrailerHost: UIView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        subviews.forEach { $0.frame = bounds }
+    }
+}
+
+/// The content controller holds its handler strongly; this breaks the cycle, and lets a parked
+/// player report to whichever card picks it up next.
+fileprivate final class ScriptHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler?) { self.target = target }
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(controller, didReceive: message)
+    }
+}
+
 /// YouTube's embedded player, looping one video with no controls.
 private struct YouTubeLoop: UIViewRepresentable {
     let videoId: String
@@ -123,14 +222,33 @@ private struct YouTubeLoop: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(onPlaying: onPlaying, onStatus: onStatus) }
 
-    func makeUIView(context: Context) -> WKWebView {
+    func makeUIView(context: Context) -> UIView {
+        let host = TrailerHost()
+        host.backgroundColor = .clear
+        host.isUserInteractionEnabled = false
+        let coordinator = context.coordinator
+        coordinator.videoId = videoId
+        coordinator.muted = muted
+
+        if let warm = TrailerPool.shared.take(videoId) {
+            warm.handler.target = coordinator
+            coordinator.web = warm.web
+            coordinator.handler = warm.handler
+            coordinator.started = true
+            host.addSubview(warm.web)
+            onStatus("resumed")
+            warm.web.evaluateJavaScript("window.setMuted && setMuted(\(muted)); window.player && player.playVideo && player.playVideo()")
+            return host
+        }
+
+        let handler = ScriptHandler(coordinator)
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.allowsPictureInPictureMediaPlayback = false
         config.allowsAirPlayForMediaPlayback = false
         config.mediaTypesRequiringUserActionForPlayback = []
-        config.websiteDataStore = .nonPersistent()
-        config.userContentController.add(WeakHandler(context.coordinator), name: "yt")
+        config.websiteDataStore = TrailerPool.shared.dataStore
+        config.userContentController.add(handler, name: "yt")
         config.userContentController.addUserScript(WKUserScript(
             source: Self.videoOnly, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
@@ -144,30 +262,41 @@ private struct YouTubeLoop: UIViewRepresentable {
         // embed asks for; the desktop player honours controls=0 and shows only the picture.
         web.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         web.loadHTMLString(Self.page(videoId, muted: muted), baseURL: URL(string: TrailerPreviews.origin + "/"))
-        context.coordinator.muted = muted
-        return web
+        coordinator.web = web
+        coordinator.handler = handler
+        host.addSubview(web)
+        return host
     }
 
-    func updateUIView(_ web: WKWebView, context: Context) {
+    func updateUIView(_ host: UIView, context: Context) {
         context.coordinator.onPlaying = onPlaying
         context.coordinator.onStatus = onStatus
         if context.coordinator.muted != muted {
             context.coordinator.muted = muted
-            web.evaluateJavaScript(muted ? "window.setMuted && setMuted(true)" : "window.setMuted && setMuted(false)")
+            context.coordinator.web?.evaluateJavaScript("window.setMuted && setMuted(\(muted))")
         }
     }
 
-    static func dismantleUIView(_ web: WKWebView, coordinator: Coordinator) {
-        web.evaluateJavaScript("window.player && player.stopVideo && player.stopVideo()")
-        web.configuration.userContentController.removeScriptMessageHandler(forName: "yt")
-        web.stopLoading()
-        web.loadHTMLString("", baseURL: nil)
+    static func dismantleUIView(_ host: UIView, coordinator: Coordinator) {
+        guard let web = coordinator.web else { return }
+        coordinator.web = nil
+        // Only a trailer that actually played is worth keeping; a failed one is thrown away.
+        if coordinator.started, let handler = coordinator.handler {
+            TrailerPool.shared.park(.init(id: coordinator.videoId, web: web, handler: handler))
+        } else {
+            TrailerPool.destroy(web)
+        }
     }
 
     final class Coordinator: NSObject, WKScriptMessageHandler {
         var onPlaying: (Bool) -> Void
         var onStatus: (String) -> Void
         var muted = true
+        var videoId = ""
+        var started = false
+        var web: WKWebView?
+        fileprivate var handler: ScriptHandler?
+
         init(onPlaying: @escaping (Bool) -> Void, onStatus: @escaping (String) -> Void) {
             self.onPlaying = onPlaying
             self.onStatus = onStatus
@@ -180,16 +309,13 @@ private struct YouTubeLoop: UIViewRepresentable {
             if let note = message.body as? String { onStatus(note); return }
             guard let state = message.body as? Int else { return }
             onStatus("state \(state)")
-            if state == 1 { onPlaying(true) } else if state == -2 { onPlaying(false) }
-        }
-    }
-
-    /// The content controller holds its handler strongly; this breaks the cycle.
-    private final class WeakHandler: NSObject, WKScriptMessageHandler {
-        weak var target: WKScriptMessageHandler?
-        init(_ target: WKScriptMessageHandler) { self.target = target }
-        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            target?.userContentController(controller, didReceive: message)
+            if state == 1 {
+                started = true
+                onPlaying(true)
+            } else if state == -2 {
+                started = false
+                onPlaying(false)
+            }
         }
     }
 
