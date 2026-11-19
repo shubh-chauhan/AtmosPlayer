@@ -78,7 +78,7 @@ struct TrailerBackdrop: View {
             }
         }
         .clipped()
-        .overlay(alignment: .center) {
+        .overlay(alignment: .top) {
             if TrailerPreviews.diagnosing {
                 Text("trailer \(youtubeId ?? "none") · active \(active ? "yes" : "no") · \(armed ? status : "not armed")")
                     .font(.caption.monospaced()).padding(6)
@@ -131,6 +131,8 @@ private struct YouTubeLoop: UIViewRepresentable {
         config.mediaTypesRequiringUserActionForPlayback = []
         config.websiteDataStore = .nonPersistent()
         config.userContentController.add(WeakHandler(context.coordinator), name: "yt")
+        config.userContentController.addUserScript(WKUserScript(
+            source: Self.videoOnly, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
         let web = WKWebView(frame: .zero, configuration: config)
         web.isOpaque = false
@@ -190,6 +192,16 @@ private struct YouTubeLoop: UIViewRepresentable {
             target?.userContentController(controller, didReceive: message)
         }
     }
+
+    /// Runs inside YouTube's player frame: hides every element that is not the video or one of
+    /// its containers, so no play/pause/skip buttons, title, logo or spinner is ever drawn.
+    private static let videoOnly = """
+    if (/(^|\\.)youtube(-nocookie)?\\.com$/.test(location.hostname)) {
+      var s = document.createElement('style');
+      s.textContent = '*:not(:has(video)):not(video){visibility:hidden!important}video{visibility:visible!important}';
+      (document.head || document.documentElement).appendChild(s);
+    }
+    """
 
     private static func page(_ id: String, muted: Bool) -> String {
         let safe = id.filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }

@@ -508,7 +508,7 @@ struct HeroCarousel: View {
     private let trailerInterval: Double = 28
 
     private var paused: Bool {
-        dragging || coordinator.current != nil || scenePhase != .active || TrailerPreviews.diagnosing
+        dragging || coordinator.current != nil || scenePhase != .active
     }
 
     var body: some View {
@@ -580,7 +580,8 @@ struct HeroCarousel: View {
                 reset.disablesAnimations = true
                 withTransaction(reset) { fill = 0 }
             }
-            guard !paused, items.count > 1 else { return }
+            // The CI trailer screenshot stays on one page so its trailer has time to start.
+            guard !paused, !TrailerPreviews.diagnosing, items.count > 1 else { return }
             if !stretch {
                 try? await Task.sleep(nanoseconds: 60_000_000)
                 guard !Task.isCancelled else { return }
