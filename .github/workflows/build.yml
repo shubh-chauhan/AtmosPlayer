@@ -246,6 +246,12 @@ jobs:
           xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
           sleep 4
           xcrun simctl io "$UDID" screenshot shots/springboard.png
+          # The self-check (judged in its own step below; a booted simulator, since re-booting
+          # one after shutdown hangs on this runner).
+          xcrun simctl launch --console-pty --terminate-running-process "$UDID" com.atmosplayer.app -selfCheck YES > selfcheck.log 2>&1 &
+          for i in $(seq 1 30); do grep -q "SELFCHECK" selfcheck.log && break; sleep 2; done
+          sleep 2
+          xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
           xcrun simctl shutdown "$UDID" || true
           # The same screens on an iPad.
           PAD=$(xcrun simctl list devices available -j | python3 -c '
@@ -310,22 +316,10 @@ jobs:
 
       - name: Self-check
         # Pure-logic checks built into Debug builds (AtmosPlayer/SelfCheck.swift): the app runs
-        # them when launched with -selfCheck, prints SELFCHECK PASS / FAIL lines and quits.
-        timeout-minutes: 5
+        # them when launched with -selfCheck, prints SELFCHECK PASS / FAIL lines and quits. The
+        # screenshot step runs it; this judges its output.
         run: |
-          UDID=$(xcrun simctl list devices available -j | python3 -c '
-          import json, sys
-          devices = [d for runtime, ds in json.load(sys.stdin)["devices"].items() if "iOS" in runtime for d in ds]
-          phones = [d for d in devices if d["name"].startswith("iPhone")]
-          pick = next((d for d in phones if "Pro" in d["name"] and "Max" not in d["name"]), phones[0])
-          print(pick["udid"])')
-          xcrun simctl boot "$UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/AtmosPlayer.app
-          xcrun simctl launch --console-pty --terminate-running-process "$UDID" com.atmosplayer.app -selfCheck YES > selfcheck.log 2>&1 &
-          for i in $(seq 1 60); do grep -q "SELFCHECK" selfcheck.log && break; sleep 2; done
-          sleep 2
-          cat selfcheck.log | grep SELFCHECK || true
+          grep SELFCHECK selfcheck.log || true
           grep "SELFCHECK FAIL" selfcheck.log | while IFS= read -r line; do echo "::error::$line"; done
           grep -q "SELFCHECK PASS" selfcheck.log || { echo "::error::Self-check did not pass"; exit 1; }
 
