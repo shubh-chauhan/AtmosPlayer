@@ -52,6 +52,19 @@ actor ImagePipeline {
 
         let session = self.session
         let task = Task<UIImage?, Never>.detached(priority: .utility) {
+            // Saved copies older than a month are fetched again (artwork does change); the old
+            // copy is still used when the network fails.
+            let saved = session.configuration.urlCache?.cachedResponse(for: URLRequest(url: url))
+            if let saved, Self.isStale(saved.response) {
+                var fresh = URLRequest(url: url)
+                fresh.cachePolicy = .reloadIgnoringLocalCacheData
+                if let (data, response) = try? await session.data(for: fresh),
+                   ((response as? HTTPURLResponse)?.statusCode ?? 200) < 400,
+                   let image = Self.downsample(data, maxPixel: maxPixel) {
+                    return image
+                }
+                return Self.downsample(saved.data, maxPixel: maxPixel)
+            }
             guard let (data, _) = try? await session.data(from: url) else { return nil }
             return Self.downsample(data, maxPixel: maxPixel)
         }
@@ -66,6 +79,24 @@ actor ImagePipeline {
             failed[key] = Date()
         }
         return result
+    }
+
+    /// How long a downloaded image is used before it's checked again.
+    static let maxAge: TimeInterval = 30 * 24 * 3600
+
+    private static let httpDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter
+    }()
+
+    /// Older than `maxAge`, going by the server's Date header (no header: kept).
+    nonisolated static func isStale(_ response: URLResponse, now: Date = Date()) -> Bool {
+        guard let text = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Date"),
+              let date = httpDate.date(from: text) else { return false }
+        return now.timeIntervalSince(date) > maxAge
     }
 
     private static func key(_ url: URL, _ maxPixel: Int) -> String {
@@ -147,6 +178,8 @@ struct RemoteImage: View {
     var placeholderSymbol: String = "film"
 
     @State private var image: UIImage?
+    /// Still looking: the placeholder pulses instead of showing the "no picture" symbol.
+    @State private var loading = false
 
     init(url: String?, maxPixel: Int = 400, placeholderSymbol: String = "film") {
         self.init(candidates: url.map { [$0] } ?? [], maxPixel: maxPixel, placeholderSymbol: placeholderSymbol)
@@ -182,8 +215,8 @@ struct RemoteImage: View {
                         .transition(.opacity)
                 } else {
                     ZStack {
-                        Color.white.opacity(0.08)
-                        if !placeholderSymbol.isEmpty {
+                        LoadingShade(active: loading)
+                        if !placeholderSymbol.isEmpty && !loading {
                             Image(systemName: placeholderSymbol)
                                 .foregroundStyle(.white.opacity(0.3))
                         }
@@ -192,6 +225,8 @@ struct RemoteImage: View {
             }
             .clipped()
             .task(id: LoadKey(candidates: candidates, lookup: lookup)) {
+                loading = image == nil && !(candidates.isEmpty && lookup == nil)
+                defer { loading = false }
                 if candidates.isEmpty && lookup == nil {
                     image = nil
                     return
@@ -218,8 +253,21 @@ struct RemoteImage: View {
     }
 }
 
+/// A grey stand-in that pulses gently while a picture is on its way.
+struct LoadingShade: View {
+    var active = true
+    @State private var dim = false
+
+    var body: some View {
+        Color.white.opacity(active && dim ? 0.05 : 0.09)
+            .animation(active ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .default, value: dim)
+            .onAppear { dim = true }
+            .accessibilityHidden(true)
+    }
+}
+
 /// The last place a picture is looked for when none of its addresses load: TMDB's art for
-/// the title (IMDb ids only).
+/// the title (IMDb and anime ids).
 struct ArtworkLookup: Hashable {
     enum Kind: Hashable { case poster, backdrop }
     let id: String

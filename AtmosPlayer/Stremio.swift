@@ -537,7 +537,7 @@ enum StremioClient {
     }
 
     static func fetchManifest(_ url: URL) async throws -> (StremioManifest, Data) {
-        let data = try await get(url)
+        let data = try await get(url, gated: false)
         return (try JSONDecoder().decode(StremioManifest.self, from: data), data)
     }
 
@@ -562,12 +562,12 @@ enum StremioClient {
 
     static func streams(_ addon: InstalledAddon, type: String, id: String) async throws -> [StremioStream] {
         let url = try resourceURL(addon, "stream", type, id)
-        return try JSONDecoder().decode(StreamResponse.self, from: try await get(url)).streams
+        return try JSONDecoder().decode(StreamResponse.self, from: try await get(url, gated: false)).streams
     }
 
     static func subtitles(_ addon: InstalledAddon, type: String, id: String) async throws -> [AddonSubtitle] {
         let url = try resourceURL(addon, "subtitles", type, id)
-        return try JSONDecoder().decode(SubtitlesResponse.self, from: try await get(url)).subtitles
+        return try JSONDecoder().decode(SubtitlesResponse.self, from: try await get(url, gated: false)).subtitles
     }
 
     private static func resourceURL(_ addon: InstalledAddon, _ resource: String, _ type: String, _ id: String, extra: String = "") throws -> URL {
@@ -577,14 +577,29 @@ enum StremioClient {
         return url
     }
 
-    private static func get(_ url: URL, timeout: TimeInterval = 25) async throws -> Data {
-        var request = URLRequest(url: url, timeoutInterval: timeout)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw StremioError.http(http.statusCode)
+    /// Catalog, meta and search calls: at most a dozen at once, so opening Home or searching
+    /// never floods an addon. Streams, subtitles and manifests (what you're waiting on) skip it.
+    private static let gate = RequestGate(limit: 12)
+
+    /// The body of a 2xx answer. A 429 is tried once more after the wait it asks for (≤ 5 s).
+    private static func get(_ url: URL, timeout: TimeInterval = 25, gated: Bool = true) async throws -> Data {
+        if gated { await gate.enter() }
+        defer { if gated { Task { await gate.leave() } } }
+        for attempt in 0..<2 {
+            var request = URLRequest(url: url, timeoutInterval: timeout)
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode == 429, attempt == 0 {
+                    let after = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? 1
+                    try await Task.sleep(nanoseconds: UInt64(min(max(after, 0.5), 5) * 1_000_000_000))
+                    continue
+                }
+                if !(200..<300).contains(http.statusCode) { throw StremioError.http(http.statusCode) }
+            }
+            return data
         }
-        return data
+        throw StremioError.http(429)
     }
 
     /// JavaScript's encodeURIComponent, which is what Stremio itself uses for ids and extras.

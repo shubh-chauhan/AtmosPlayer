@@ -99,6 +99,7 @@ struct AppSettingsView: View {
     @AppStorage(Prefs.subtitleBold) private var subtitleBold = true
     @AppStorage(Prefs.subtitleLift) private var subtitleLift = 0.0
     @AppStorage(StreamFilterStore.key) private var savedFilters = ""
+    @AppStorage(QuickPlay.autoPickKey) private var autoPickBest = true
 
     @State private var cacheCleared = false
     @State private var confirmClearWatch = false
@@ -189,6 +190,7 @@ struct AppSettingsView: View {
                 }
 
                 Section {
+                    Toggle("Play starts the best stream", isOn: $autoPickBest)
                     Toggle("Show Dolby Atmos streams only", isOn: atmosOnly)
                     if !savedFilters.isEmpty {
                         Button("Clear stream filters") { savedFilters = "" }
@@ -196,7 +198,23 @@ struct AppSettingsView: View {
                 } header: {
                     Text("Streams")
                 } footer: {
-                    Text("Filter by quality, HDR, audio, codec and source from the chips on the stream list. Your selection is remembered.")
+                    Text("With the best stream on, Play starts the highest quality stream your addons have (resolution, then Dolby Vision or HDR, then Atmos), within your stream filters, when there's no stream from last time. Touch and hold Play to choose one yourself.\n\nFilter by quality, HDR, audio, codec and source from the chips on the stream list. Your selection is remembered.")
+                }
+
+                TraktSection()
+
+                Section {
+                    if MDBList.isConfigured {
+                        Label("Rotten Tomatoes, Metacritic & Letterboxd on", systemImage: "checkmark.circle.fill")
+                    } else {
+                        Label("IMDb and TMDB only", systemImage: "info.circle")
+                    }
+                } header: {
+                    Text("Ratings")
+                } footer: {
+                    Text(MDBList.isConfigured
+                         ? "Critics' and audience scores on title pages come from MDBList."
+                         : "To show Rotten Tomatoes, Metacritic and Letterboxd scores on title pages, add a free MDBList API key (mdblist.com › Preferences › API) as the MDBLIST_KEY repository secret.")
                 }
 
                 if TMDB.isConfigured {
@@ -223,6 +241,9 @@ struct AppSettingsView: View {
                     Button("Clear Continue Watching", role: .destructive) { confirmClearWatch = true }
                     Button("Clear recent links", role: .destructive) { history.clear() }
                         .disabled(history.entries.isEmpty)
+                    if PendingWrites.shared.count > 0 {
+                        LabeledContent("Waiting to sync", value: "\(PendingWrites.shared.count)")
+                    }
                 }
 
                 Section {
@@ -261,6 +282,57 @@ struct AppSettingsView: View {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "-"
         return "\(version) (\(build))"
+    }
+}
+
+/// Connect, sync and disconnect Trakt.
+struct TraktSection: View {
+    @ObservedObject private var trakt = TraktAccount.shared
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Section {
+            if !TraktConfig.isConfigured {
+                Label("Not set up in this build", systemImage: "info.circle")
+                    .foregroundStyle(.secondary)
+            } else if trakt.connected {
+                LabeledContent("Account", value: trakt.username ?? "Connected")
+                Button(trakt.syncing ? "Syncing…" : "Sync Now") { Task { await trakt.sync() } }
+                    .disabled(trakt.syncing)
+                if let last = trakt.lastSync {
+                    LabeledContent("Last synced", value: last.formatted(.relative(presentation: .named)))
+                }
+                Button("Disconnect", role: .destructive) { trakt.disconnect() }
+            } else if let pairing = trakt.pairing {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("On any device, go to \(pairing.url) and enter:")
+                        .font(.subheadline)
+                    Text(pairing.userCode)
+                        .font(.system(.title, design: .monospaced).weight(.bold))
+                        .textSelection(.enabled)
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Waiting for you to approve…").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                Button("Copy Code and Open Trakt") {
+                    UIPasteboard.general.string = pairing.userCode
+                    if let url = URL(string: pairing.url) { openURL(url) }
+                }
+                Button("Cancel", role: .cancel) { trakt.cancelPairing() }
+            } else {
+                Button("Connect Trakt") { trakt.connect() }
+            }
+            if let error = trakt.lastError {
+                Text(error).font(.footnote).foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Trakt")
+        } footer: {
+            Text(TraktConfig.isConfigured
+                 ? "Sends what you watch to Trakt, keeps ✓ marks in step with your Trakt history, lets you rate titles from their page, and adds Trakt's picks to Home."
+                 : "To use Trakt, create an API app at trakt.tv/oauth/applications (redirect URI: urn:ietf:wg:oauth:2.0:oob) and add its Client ID and Client Secret as the TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET repository secrets.")
+        }
     }
 }
 

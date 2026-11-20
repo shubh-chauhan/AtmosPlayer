@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import CoreSpotlight
 import EngineBundle
 
 /// One engine for the whole app (AetherEngine's rule). Created once at launch.
@@ -66,6 +67,7 @@ struct AtmosPlayerApp: App {
                     let account = self.account
                     watch.onRecord = { ref, position, duration in
                         Task { await account.pushProgress(ref, position: position, duration: duration) }
+                        Task { await TraktAccount.shared.scrobble(ref, position: position, duration: duration) }
                     }
                     watch.onRemove = { ref in
                         Task { await account.clearProgress(ref) }
@@ -73,14 +75,19 @@ struct AtmosPlayerApp: App {
                     WatchedStore.shared.onChange = { metaId, type, watched, videoIds in
                         Task { await account.pushWatched(metaId: metaId, type: type, watched: watched, videoIds: videoIds) }
                     }
+                    WatchedStore.shared.onMarkByHand = { metaId, type, ids, on in
+                        Task { await TraktAccount.shared.pushHistory(metaId: metaId, type: type, videoIds: ids, add: on) }
+                    }
                     // Picks up downloads that carried on while the app was closed.
                     _ = DownloadStore.shared
                     await account.sync(addons: addons, watch: watch)
+                    await TraktAccount.shared.sync()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     // Pick up what was watched in the Stremio apps meanwhile.
                     if phase == .active {
                         Task { await account.sync(addons: addons, watch: watch, ifOlderThan: 120) }
+                        Task { await TraktAccount.shared.sync(ifOlderThan: 900) }
                     }
                 }
         }
@@ -93,6 +100,9 @@ struct RootView: View {
     @EnvironmentObject private var watch: WatchStore
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
+    @EnvironmentObject private var favorites: FavoritesStore
+    @EnvironmentObject private var account: StremioAccount
+    @ObservedObject private var router = AppRouter.shared
     @State private var tab = PreviewMode.initialTab
     /// The tabs stop drawing once the player covers them (and start again before it leaves).
     @State private var homeHidden = false
@@ -124,6 +134,16 @@ struct RootView: View {
                 }
             }
         }
+    }
+
+    private var spotlightTitles: [MetaRef] {
+        favorites.items + watch.entries.map {
+            MetaRef(id: $0.ref.metaId, type: $0.ref.type, name: $0.ref.name, poster: $0.ref.poster)
+        } + account.library
+    }
+
+    private var spotlightKey: String {
+        "\(favorites.items.count)|\(watch.entries.first?.id ?? "")|\(watch.entries.count)|\(account.library.count)"
     }
 
     @ViewBuilder
@@ -181,6 +201,13 @@ struct RootView: View {
         .onOpenURL { incoming in
             guard incoming.scheme == "atmosplayer",
                   let components = URLComponents(url: incoming, resolvingAgainstBaseURL: false) else { return }
+            // atmosplayer://title?id=<id>&type=<movie|series>: opens a title page.
+            if components.host == "title",
+               let id = components.queryItems?.first(where: { $0.name == "id" })?.value, !id.isEmpty {
+                let type = components.queryItems?.first(where: { $0.name == "type" })?.value ?? "movie"
+                router.open(MetaRef(id: id, type: type, name: "", poster: nil))
+                return
+            }
             // atmosplayer://resume?id=<video id>, from the Continue Watching widget.
             if components.host == "resume",
                let id = components.queryItems?.first(where: { $0.name == "id" })?.value {
@@ -196,6 +223,34 @@ struct RootView: View {
         // Keep the home-screen widget in step with Continue Watching.
         .onReceive(watch.$entries.debounce(for: .seconds(2), scheduler: RunLoop.main)) { entries in
             WidgetBridge.update(entries)
+        }
+        // A title tapped in iPhone search.
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            if let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+               let ref = SpotlightIndex.ref(identifier) {
+                router.open(ref)
+            }
+        }
+        // Siri, Shortcuts, Spotlight and links: the tab first; Home and Search do the rest.
+        .task(id: router.revision) {
+            switch router.pending {
+            case .title?:
+                tab = 0
+            case .search?:
+                tab = 3
+            case .resumeLatest?:
+                _ = router.take()
+                tab = 0
+                if let latest = watch.entries.first { coordinator.pendingResume = latest.id }
+            case nil:
+                break
+            }
+        }
+        // Your titles in iPhone search, a few seconds after they change.
+        .task(id: spotlightKey) {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled, PreviewMode.screen == nil else { return }
+            SpotlightIndex.update(spotlightTitles)
         }
     }
 }

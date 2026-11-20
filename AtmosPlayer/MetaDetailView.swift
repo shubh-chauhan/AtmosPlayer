@@ -10,6 +10,7 @@ struct MetaDetailView: View {
     @EnvironmentObject private var favorites: FavoritesStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @ObservedObject private var watched = WatchedStore.shared
+    @ObservedObject private var trakt = TraktAccount.shared
     @Environment(\.openURL) private var openURL
     @Environment(\.verticalSizeClass) private var verticalSize
     @Environment(\.horizontalSizeClass) private var horizontalSize
@@ -32,6 +33,8 @@ struct MetaDetailView: View {
     @State private var heroChosen: String?
     /// TMDB's episode stills by Stremio video id, for episodes whose own picture doesn't load.
     @State private var stills: [String: String] = [:]
+    /// Rotten Tomatoes, Metacritic and others, from MDBList.
+    @State private var scores: [MDBList.Rating] = []
     /// The navigation bar fades in once the backdrop has scrolled away.
     @State private var showBar = false
     /// Trailer preview behind the title: shown, sound on, and whether this page is on top.
@@ -139,7 +142,7 @@ struct MetaDetailView: View {
                     VStack(alignment: .leading, spacing: 30) {
                         if !wide { descriptionBlock }
                         if let meta {
-                            RatingsRow(meta: meta, tmdbRating: extras?.tmdbRating)
+                            RatingsRow(meta: meta, tmdbRating: extras?.tmdbRating, more: scores)
                         }
                         if isSeries && !orderedVideos.isEmpty {
                             VStack(alignment: .leading, spacing: 14) {
@@ -148,7 +151,20 @@ struct MetaDetailView: View {
                             }
                         }
                         if loading && meta == nil {
-                            ProgressView().frame(maxWidth: .infinity)
+                            // Grey lines where the details will be.
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach([1.0, 0.92, 0.75], id: \.self) { share in
+                                    LoadingShade()
+                                        .frame(height: 13)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .scaleEffect(x: share, anchor: .leading)
+                                        .clipShape(Capsule())
+                                }
+                                LoadingShade().frame(width: 220, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .padding(.top, 10)
+                            }
+                            .padding(.horizontal, Device.margin)
+                            .accessibilityLabel("Loading")
                         } else if loadFailed && meta == nil {
                             loadFailedNotice
                         } else if let meta, isSeries, orderedVideos.isEmpty {
@@ -223,16 +239,25 @@ struct MetaDetailView: View {
                                                     maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800)
             if !Task.isCancelled { withAnimation(.easeOut(duration: 0.25)) { heroChosen = picked; heroReady = true } }
         }
-        .task(id: season) {
-            // TMDB's stills for the season on screen: the next place to look for an episode's picture.
-            guard isSeries, TMDB.isConfigured, ref.id.hasPrefix("tt"),
-                  let found = await TMDB.find(imdb: ref.id), found.kind == .tv,
-                  let details = await TMDB.details(found, seasons: [season]) else { return }
-            var next = stills
+        .task(id: "\(season)/\(orderedVideos.count)") {
+            // TMDB's stills for the season on screen: the next place to look for an episode's
+            // picture. Matched by season and episode number, so anime (Kitsu ids) gets them too.
+            guard isSeries, TMDB.isConfigured, MetaResolver.mappable(ref.id),
+                  let found = await MetaResolver.tmdbRef(for: ref.id), found.kind == .tv,
+                  let details = await TMDB.details(found, seasons: [max(season, 1)]) else { return }
+            var byNumber: [String: String] = [:]
             for video in details.videos(imdb: ref.id) {
-                if let thumbnail = video.thumbnail { next[video.id] = thumbnail }
+                if let thumbnail = video.thumbnail, let s = video.season, let e = video.episode { byNumber["\(s):\(e)"] = thumbnail }
+            }
+            var next = stills
+            for video in orderedVideos where (video.season ?? 1) == season || (season == 1 && video.season == nil) {
+                if let e = video.episode, let still = byNumber["\(video.season ?? 1):\(e)"] { next[video.id] = still }
             }
             if !Task.isCancelled, next != stills { stills = next }
+        }
+        .task {
+            let found = await MDBList.ratings(imdb: ref.id, type: ref.type)
+            if !Task.isCancelled, !found.isEmpty { withAnimation(.easeOut(duration: 0.3)) { scores = found } }
         }
         .task {
             let found = await MetaResolver.extras(for: ref)
@@ -444,6 +469,13 @@ struct MetaDetailView: View {
                         }
                     }
                     .sensoryFeedback(.success, trigger: done)
+                }
+
+                if trakt.connected, ref.id.hasPrefix("tt") {
+                    TraktRatingMenu(metaId: ref.id, type: type) { rating in
+                        HeroActionLabel(symbol: rating == nil ? "heart" : "heart.fill",
+                                        label: rating.map { "Rated \($0)" } ?? "Rate", wide: wide)
+                    }
                 }
 
                 if let url = shareLink {

@@ -7,6 +7,8 @@ struct RatingsRow: View {
     let meta: StremioMeta
     /// TMDB's user score, shown beside IMDb's (never in place of it).
     var tmdbRating: Double? = nil
+    /// Rotten Tomatoes, Metacritic, Letterboxd and Trakt, from MDBList.
+    var more: [MDBList.Rating] = []
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -35,6 +37,20 @@ struct RatingsRow: View {
                         }
                     } caption: {
                         Text("User score")
+                    }
+                }
+                ForEach(more, id: \.source) { rating in
+                    tile {
+                        HStack(spacing: 6) {
+                            let symbol = MDBList.symbol(rating)
+                            if !symbol.isEmpty { Text(symbol).font(.title3) }
+                            Text(MDBList.text(rating)).font(.title3.weight(.bold).monospacedDigit())
+                            if rating.source == "letterboxd" {
+                                Text("/5").font(.caption).foregroundStyle(.white.opacity(0.5))
+                            }
+                        }
+                    } caption: {
+                        Text(MDBList.label(rating.source))
                     }
                 }
                 if let awards = meta.awards, !awards.isEmpty {

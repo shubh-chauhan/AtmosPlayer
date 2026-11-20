@@ -194,6 +194,55 @@ struct PosterCard: View {
                 Text(subtitle).font(.caption2).foregroundStyle(.white.opacity(0.5))
             }
         }
+        .titleCard(id.map { MetaRef(id: $0, type: type, name: title, poster: poster) })
+    }
+}
+
+extension View {
+    /// Long-press menu and early loading for a card that opens a title.
+    func titleCard(_ ref: MetaRef?) -> some View { modifier(TitleCardExtras(ref: ref)) }
+}
+
+/// A title card's long-press menu (My List, watched, share), and its details fetched while
+/// the card is on screen, so the title page opens with everything (hero art too) at once.
+struct TitleCardExtras: ViewModifier {
+    let ref: MetaRef?
+    @EnvironmentObject private var favorites: FavoritesStore
+    @ObservedObject private var watched = WatchedStore.shared
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let ref {
+            content
+                .contextMenu { menu(ref) }
+                .task(id: ref.id) {
+                    // Only cards you stop on, not every one scrolled past.
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    guard !Task.isCancelled, PreviewMode.screen == nil else { return }
+                    await MetaResolver.warm(ref)
+                }
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder
+    private func menu(_ ref: MetaRef) -> some View {
+        let saved = favorites.contains(ref.id)
+        Button(saved ? "Remove from My List" : "Add to My List", systemImage: saved ? "minus.circle" : "plus.circle") {
+            withAnimation(.snappy) { favorites.toggle(ref) }
+        }
+        if ref.type == "movie" {
+            let done = watched.isWatched(ref.id, metaId: ref.id)
+            Button(done ? "Mark as Unwatched" : "Mark as Watched", systemImage: done ? "eye.slash" : "checkmark.circle") {
+                watched.set([ref.id], watched: !done, metaId: ref.id, type: "movie", videoIds: nil)
+            }
+        }
+        if ref.id.hasPrefix("tt"), let url = URL(string: "https://www.imdb.com/title/\(ref.id)/") {
+            ShareLink(item: url, subject: Text(ref.name)) {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+        }
     }
 }
 
@@ -230,6 +279,7 @@ typealias PosterImage = RemoteImage
 struct SearchScreen: View {
     @EnvironmentObject private var addons: AddonStore
     @ObservedObject private var feed = HomeFeed.shared
+    @ObservedObject private var router = AppRouter.shared
 
     @State private var query = ""
     @State private var results: [CatalogRow] = []
@@ -280,12 +330,19 @@ struct SearchScreen: View {
                         .animation(.easeInOut(duration: 0.2), value: shownQuery == trimmed)
                         if results.isEmpty && people.isEmpty {
                             if pending + addonsPending > 0 || shownQuery != trimmed {
-                                HStack(spacing: 10) {
-                                    ProgressView()
-                                    Text("Searching…").font(.footnote).foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 10) {
+                                    RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.1)).frame(width: 130, height: 18)
+                                    LazyVGrid(columns: columns, spacing: 16) {
+                                        ForEach(0..<9, id: \.self) { _ in
+                                            LoadingShade()
+                                                .aspectRatio(2 / 3, contentMode: .fit)
+                                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                        }
+                                    }
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 80)
+                                .padding(.horizontal, Device.margin)
+                                .padding(.top, 8)
+                                .accessibilityLabel("Searching")
                             } else {
                                 ContentUnavailableView.search(text: trimmed)
                                     .padding(.top, 60)
@@ -310,6 +367,13 @@ struct SearchScreen: View {
             .onSubmit(of: .search) { remember(trimmed) }
             .modifier(BrowseDestinations())
             .task(id: trimmed) { await search(trimmed) }
+            // "Search Atmos Player for …" from Siri or Shortcuts.
+            .task(id: router.revision) {
+                if case .search(let text)? = router.pending {
+                    _ = router.take()
+                    query = text
+                }
+            }
             .task { await feed.load() }
             .task {
                 // CI screenshots only: type a search.

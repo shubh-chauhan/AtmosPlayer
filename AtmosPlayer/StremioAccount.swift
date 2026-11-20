@@ -29,10 +29,7 @@ final class StremioAccount: ObservableObject {
     init() {
         authKey = Keychain.read("stremio.authKey")
         email = UserDefaults.standard.string(forKey: emailKey)
-        if let data = UserDefaults.standard.data(forKey: libraryKey),
-           let stored = try? JSONDecoder().decode([MetaRef].self, from: data) {
-            library = stored
-        }
+        library = DiskStore.load(libraryKey, as: [MetaRef].self) ?? []
     }
 
     // MARK: Sign in / out
@@ -61,7 +58,7 @@ final class StremioAccount: ObservableObject {
         library = []
         lastSync = nil
         UserDefaults.standard.removeObject(forKey: emailKey)
-        UserDefaults.standard.removeObject(forKey: libraryKey)
+        DiskStore.remove(libraryKey)
     }
 
     // MARK: Pull from Stremio
@@ -73,6 +70,8 @@ final class StremioAccount: ObservableObject {
         if age > 0, let lastSync, Date().timeIntervalSince(lastSync) < age { return }
         syncing = true
         defer { syncing = false }
+        // Writes that failed earlier go first, so what's read back includes them.
+        await sendPending()
         do {
             async let addonResult = StremioAPI.call("addonCollectionGet",
                                                     ["type": "AddonCollectionGet", "authKey": key, "update": true])
@@ -98,7 +97,7 @@ final class StremioAccount: ObservableObject {
                 .sorted { $0.modified > $1.modified }
                 .map { MetaRef(id: $0.id, type: $0.type, name: $0.name, poster: $0.poster) }
             library = saved
-            if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: libraryKey) }
+            DiskStore.save(saved, libraryKey)
             watch.mergeFromStremio(items.map(\.watchSnapshot))
             // Watched movies and episodes (the ✓ marks).
             for item in items where item.type == "movie" || item.type == "series" {
@@ -118,6 +117,29 @@ final class StremioAccount: ObservableObject {
 
     // MARK: Push to Stremio
 
+    /// Sends the writes saved while Stremio couldn't be reached.
+    func sendPending() async {
+        guard authKey != nil else { return }
+        for op in PendingWrites.shared.take(stremio: true) {
+            switch op {
+            case let .stremioProgress(ref, position, duration, at):
+                await pushProgress(ref, position: position, duration: duration, at: at)
+            case let .stremioWatched(metaId, type, watched, videoIds):
+                await pushWatched(metaId: metaId, type: type, watched: Set(watched), videoIds: videoIds)
+            case let .stremioClear(ref):
+                await clearProgress(ref)
+            default:
+                break
+            }
+        }
+    }
+
+    /// A write that failed for a reason that can pass (no signal, server error) is kept to retry.
+    private func failed(_ op: PendingWrites.Op, _ error: Error, _ what: String) {
+        LogStore.shared.append("Stremio \(what) failed: \(error.localizedDescription)")
+        if PendingWrites.isTemporary(error) { PendingWrites.shared.add(op) }
+    }
+
     /// Account writes run one after another, so two changes to the same library item
     /// (progress and a ✓, say) can't overwrite each other.
     private var writeChain: Task<Void, Never>?
@@ -136,6 +158,7 @@ final class StremioAccount: ObservableObject {
     /// `videoIds` is the series' episode list in the addon's order; fetched from Cinemeta if nil.
     func pushWatched(metaId: String, type: String, watched: Set<String>, videoIds: [String]?) async {
         guard let key = authKey else { return }
+        let op = PendingWrites.Op.stremioWatched(metaId: metaId, type: type, watched: Array(watched), videoIds: videoIds)
         await serialized {
             do {
                 let existing = try await StremioAPI.call("datastoreGet",
@@ -173,8 +196,9 @@ final class StremioAccount: ObservableObject {
                 item["_mtime"] = StremioAPI.timestamp(Date())
                 _ = try await StremioAPI.call("datastorePut",
                                               ["authKey": key, "collection": "libraryItem", "changes": [item]])
+                PendingWrites.shared.resolve(op.key)
             } catch {
-                LogStore.shared.append("Stremio watched sync failed: \(error.localizedDescription)")
+                self.failed(op, error, "watched sync")
             }
         }
     }
@@ -182,6 +206,7 @@ final class StremioAccount: ObservableObject {
     /// Takes a title off Stremio's Continue Watching (what Stremio's own "dismiss" does).
     func clearProgress(_ ref: VideoRef) async {
         guard let key = authKey else { return }
+        let op = PendingWrites.Op.stremioClear(ref: ref)
         await serialized { do {
             let existing = try await StremioAPI.call("datastoreGet",
                                                      ["authKey": key, "collection": "libraryItem", "ids": [ref.metaId], "all": false])
@@ -192,17 +217,19 @@ final class StremioAccount: ObservableObject {
             item["_mtime"] = StremioAPI.timestamp(Date())
             _ = try await StremioAPI.call("datastorePut",
                                           ["authKey": key, "collection": "libraryItem", "changes": [item]])
+            PendingWrites.shared.resolve(op.key)
         } catch {
-            LogStore.shared.append("Stremio dismiss failed: \(error.localizedDescription)")
+            self.failed(op, error, "dismiss")
         } }
     }
 
     /// Called when the player closes, so Stremio's Continue Watching matches where you stopped.
-    func pushProgress(_ ref: VideoRef, position: Double, duration: Double) async {
+    func pushProgress(_ ref: VideoRef, position: Double, duration: Double, at: Date = Date()) async {
         guard pushProgressEnabled, let key = authKey, position.isFinite, duration.isFinite, position >= 30 else { return }
         let finished = duration > 0 && position > duration - max(120, duration * 0.05)
+        let op = PendingWrites.Op.stremioProgress(ref: ref, position: position, duration: duration, at: at)
         await serialized { do {
-            let now = StremioAPI.timestamp(Date())
+            let now = StremioAPI.timestamp(at)
             // Start from the latest copy on the server so nothing else in the item is lost.
             let existing = try await StremioAPI.call("datastoreGet",
                                                      ["authKey": key, "collection": "libraryItem", "ids": [ref.metaId], "all": false])
@@ -233,8 +260,9 @@ final class StremioAccount: ObservableObject {
             item["_mtime"] = now
             _ = try await StremioAPI.call("datastorePut",
                                           ["authKey": key, "collection": "libraryItem", "changes": [item]])
+            PendingWrites.shared.resolve(op.key)
         } catch {
-            LogStore.shared.append("Stremio progress sync failed: \(error.localizedDescription)")
+            self.failed(op, error, "progress sync")
         } }
     }
 }

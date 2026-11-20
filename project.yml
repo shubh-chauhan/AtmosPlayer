@@ -55,6 +55,9 @@ targets:
               - atmosplayer
         TestMediaBase: $(TEST_MEDIA_BASE)
         TMDBToken: $(TMDB_TOKEN)
+        TraktClientID: $(TRAKT_CLIENT_ID)
+        TraktClientSecret: $(TRAKT_CLIENT_SECRET)
+        MDBListKey: $(MDBLIST_KEY)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.atmosplayer.app
@@ -67,6 +70,11 @@ targets:
         TEST_MEDIA_BASE: ""
         # Set by CI from the TMDB_TOKEN repo secret (scrambled); empty = TMDB features off.
         TMDB_TOKEN: ""
+        # Optional, the same way: Trakt (TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET) and MDBList
+        # ratings (MDBLIST_KEY). Empty = that feature is off.
+        TRAKT_CLIENT_ID: ""
+        TRAKT_CLIENT_SECRET: ""
+        MDBLIST_KEY: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   # Continue Watching widget and the playback Live Activity.

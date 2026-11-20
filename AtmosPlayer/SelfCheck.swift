@@ -14,6 +14,7 @@ enum SelfCheck {
         checkCatalogs()
         checkRecommendations()
         checkSearch()
+        checkAdditions()
         if failures.isEmpty {
             print("SELFCHECK PASS")
         } else {
@@ -314,6 +315,76 @@ enum SelfCheck {
         expect(merged.map(\.id) == ["tt1", "tt3", "tt2"], "exact names first, found twice ranks higher: \(merged.map(\.id))")
         expect(merged.first?.poster == "p", "a merged title keeps the artwork another source had")
         expect(merged.filter { $0.name == "Dune" }.count == 2, "same name, different id: two results")
+    }
+    /// Best-stream pick, saved writes, MDBList scores, Trakt bodies, anime ids, Spotlight ids
+    /// and image expiry.
+    private static func checkAdditions() {
+        // One-tap Play: the best playable stream, never a camera copy, within the filters.
+        func streams(_ json: String) -> [StremioStream] {
+            (try? JSONDecoder().decode([StremioStream].self, from: Data(json.utf8))) ?? []
+        }
+        let first = streams(#"[{"name":"A","title":"Movie 1080p WEB-DL","url":"https://a.example/1"},"#
+            + #"{"name":"B","title":"Movie 2160p DV Atmos BluRay","url":"https://a.example/2"},"#
+            + #"{"name":"C","title":"Movie 2160p HDCAM DV","url":"https://a.example/3"},"#
+            + #"{"name":"D","title":"Movie 2160p DV Atmos REMUX","externalUrl":"https://a.example/4"}]"#)
+        let second = streams(#"[{"name":"E","title":"Movie 2160p DV Atmos BluRay","url":"https://b.example/1"}]"#)
+        expect(first.count == 4, "streams decode")
+        let best = QuickPlay.pickBest([first, second], selected: [])
+        expect(best?.stream.name == "B" && best?.addon == 0, "best stream: highest quality, first addon on a tie, no cam, playable only")
+        expect(QuickPlay.pickBest([first], selected: [.r1080])?.stream.name == "A", "best stream respects the filters")
+        expect(QuickPlay.pickBest([[]], selected: []) == nil, "no streams, no pick")
+
+        // Saved writes: the newest per title replaces older ones, and they survive a round trip.
+        let ref = VideoRef(type: "series", metaId: "tt1", videoId: "tt1:1:2", name: "Show", poster: nil, episodeLabel: "S1E2")
+        let older = PendingWrites.Op.stremioProgress(ref: ref, position: 100, duration: 1000, at: Date(timeIntervalSince1970: 1))
+        let newer = PendingWrites.Op.stremioProgress(ref: ref, position: 300, duration: 1000, at: Date(timeIntervalSince1970: 2))
+        expect(older.key == newer.key, "progress for one title shares a key")
+        let history = PendingWrites.Op.traktHistory(metaId: "tt1", type: "series", videoIds: ["tt1:1:2"], add: true, at: Date())
+        expect(history.key != older.key && !history.isStremio && older.isStremio, "Trakt and Stremio writes kept apart")
+        let encoded = try? JSONEncoder().encode([newer, history])
+        let decoded = encoded.flatMap { try? JSONDecoder().decode([PendingWrites.Op].self, from: $0) }
+        expect(decoded == [newer, history], "saved writes round-trip")
+        expect(PendingWrites.isTemporary(URLError(.notConnectedToInternet)), "offline is retried")
+        expect(!PendingWrites.isTemporary(StremioAPI.Failure.sessionExpired), "an expired session isn't retried")
+
+        // MDBList: known sources only, in order, empty scores dropped.
+        let mdb = Data(#"{"ratings":[{"source":"imdb","value":8.1},{"source":"metacritic","value":74,"score":74},"#
+            .appending(#"{"source":"tomatoes","value":93,"score":93},{"source":"letterboxd","value":4.1,"score":82},"#)
+            .appending(#"{"source":"tomatoesaudience","value":null,"score":0}]}"#).utf8)
+        let scores = MDBList.parse(mdb) ?? []
+        expect(scores.map(\.source) == ["tomatoes", "metacritic", "letterboxd"], "MDBList sources and order")
+        expect(scores.first.map(MDBList.text) == "93%" && MDBList.symbol(scores[0]) == "🍅", "Tomatometer reads 93% fresh")
+        expect(scores.count > 2 && MDBList.text(scores[2]) == "4.1", "Letterboxd out of 5")
+
+        // Trakt bodies.
+        let episodeBody = TraktAccount.historyBody(metaId: "tt1", type: "series", videoIds: ["tt1:2:5", "tt1:1:1", "tt1:2:1"], at: nil)
+        let shows = episodeBody?["shows"] as? [[String: Any]]
+        let seasons = shows?.first?["seasons"] as? [[String: Any]]
+        expect(seasons?.compactMap { $0["number"] as? Int } == [1, 2], "Trakt history groups episodes by season")
+        expect((seasons?.last?["episodes"] as? [[String: Any]])?.compactMap { $0["number"] as? Int } == [1, 5], "episodes sorted")
+        expect(TraktAccount.historyBody(metaId: "kitsu:1", type: "movie", videoIds: [], at: nil) == nil, "Trakt only for IMDb ids")
+        expect(TraktAccount.item(ref).flatMap { $0["episode"] as? [String: Int] } == ["season": 1, "number": 2], "scrobble body for an episode")
+
+        // Anime ids map through TMDB; other ids don't.
+        expect(KitsuMap.kitsuNumber("kitsu:1376:5") == "1376" && KitsuMap.kitsuNumber("tt1") == nil, "Kitsu number")
+        expect(MetaResolver.mappable("kitsu:1376") && MetaResolver.mappable("tt1") && !MetaResolver.mappable("tmdb:1"), "mappable ids")
+
+        // Spotlight identifiers round-trip, names with "|" too.
+        let titled = MetaRef(id: "tt9", type: "movie", name: "A | B", poster: nil)
+        let back = SpotlightIndex.ref(SpotlightIndex.identifier(titled))
+        expect(back?.id == "tt9" && back?.type == "movie" && back?.name == "A | B", "Spotlight id round-trip")
+
+        // Images older than a month are fetched again.
+        func response(daysAgo: Double) -> URLResponse {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(identifier: "GMT")
+            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            let date = formatter.string(from: Date().addingTimeInterval(-daysAgo * 86400))
+            return HTTPURLResponse(url: URL(string: "https://i.example/a.jpg")!, statusCode: 200, httpVersion: nil,
+                                   headerFields: ["Date": date])!
+        }
+        expect(ImagePipeline.isStale(response(daysAgo: 40)) && !ImagePipeline.isStale(response(daysAgo: 2)), "image expiry by Date header")
     }
 }
 #endif

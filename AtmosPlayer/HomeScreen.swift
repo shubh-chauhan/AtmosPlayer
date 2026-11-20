@@ -13,6 +13,7 @@ struct HomeScreen: View {
     @ObservedObject private var feed = HomeFeed.shared
     @ObservedObject private var calendar = EpisodeCalendar.shared
     @ObservedObject private var recommender = Recommender.shared
+    @ObservedObject private var router = AppRouter.shared
 
     @State private var path = NavigationPath()
     @State private var startingId: String?
@@ -96,7 +97,7 @@ struct HomeScreen: View {
                         GenreBrowser()
                     }
 
-                    ForEach(["gems-for-you", "popular-genres", "discover-new"], id: \.self) { id in
+                    ForEach(["trakt-picks", "gems-for-you", "popular-genres", "discover-new"], id: \.self) { id in
                         if let row = recommender.row(id) {
                             HomeSectionView(section: row)
                         }
@@ -165,6 +166,14 @@ struct HomeScreen: View {
             // The shows you follow: refreshed when that list changes.
             .task(id: followedKey) {
                 await calendar.load(series: followed)
+            }
+            // A title asked for by Spotlight or a link.
+            .task(id: router.revision) {
+                if case .title(let ref)? = router.pending {
+                    _ = router.take()
+                    path = NavigationPath()
+                    path.append(ref)
+                }
             }
             .task(id: coordinator.pendingResume) {
                 guard let id = coordinator.pendingResume else { return }
@@ -333,6 +342,7 @@ struct RankedCard: View {
         .padding(.trailing, 6)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Number \(rank), \(item.name)")
+        .titleCard(MetaRef(item))
     }
 }
 
@@ -387,6 +397,7 @@ struct WideCard: View {
                 .lineLimit(1)
         }
         .frame(width: width, alignment: .leading)
+        .titleCard(MetaRef(item))
     }
 }
 

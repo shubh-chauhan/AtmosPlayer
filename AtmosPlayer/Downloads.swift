@@ -66,10 +66,7 @@ final class DownloadStore: NSObject, ObservableObject {
 
     private override init() {
         super.init()
-        if let data = UserDefaults.standard.data(forKey: Self.key),
-           let saved = try? JSONDecoder().decode([DownloadEntry].self, from: data) {
-            entries = saved
-        }
+        entries = DiskStore.load(Self.key, as: [DownloadEntry].self) ?? []
         // Downloads that were running when the app was closed: still running in the session,
         // or lost (the app was force-quit), in which case they are offered for retry.
         session.getAllTasks { tasks in
@@ -151,9 +148,7 @@ final class DownloadStore: NSObject, ObservableObject {
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(entries) {
-            UserDefaults.standard.set(data, forKey: Self.key)
-        }
+        DiskStore.save(entries, Self.key)
     }
 
     // MARK: Delegate results (hopped to the main actor)

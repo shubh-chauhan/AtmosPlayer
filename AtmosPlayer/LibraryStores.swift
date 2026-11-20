@@ -57,10 +57,7 @@ final class FavoritesStore: ObservableObject {
     private let key = "favorites.v1"
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let stored = try? JSONDecoder().decode([MetaRef].self, from: data) {
-            items = stored
-        }
+        items = DiskStore.load(key, as: [MetaRef].self) ?? []
     }
 
     func contains(_ id: String) -> Bool { items.contains { $0.id == id } }
@@ -71,9 +68,7 @@ final class FavoritesStore: ObservableObject {
         } else {
             items.insert(ref, at: 0)
         }
-        if let data = try? JSONEncoder().encode(items) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        DiskStore.save(items, key)
     }
 }
 
@@ -94,8 +89,7 @@ final class AddonStore: ObservableObject {
     private let seededKey = "addons.seeded"
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let stored = try? JSONDecoder().decode([Stored].self, from: data) {
+        if let stored = DiskStore.load(key, as: [Stored].self) {
             var loaded: [InstalledAddon] = []
             for entry in stored {
                 guard let manifest = try? JSONDecoder().decode(StremioManifest.self, from: entry.manifest) else { continue }
@@ -189,9 +183,7 @@ final class AddonStore: ObservableObject {
             guard let json = manifestCache[addon.id] else { return nil }
             return Stored(url: addon.transportURL, manifest: json)
         }
-        if let data = try? JSONEncoder().encode(stored) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        DiskStore.save(stored, key)
         revision += 1
     }
 }
@@ -251,16 +243,11 @@ final class WatchStore: ObservableObject {
         let same = merged.map { "\($0.id)@\($0.position)" } == entries.map { "\($0.id)@\($0.position)" }
         guard !same else { return }
         entries = merged
-        if let data = try? JSONEncoder().encode(merged) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        DiskStore.save(merged, key)
     }
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let stored = try? JSONDecoder().decode([Entry].self, from: data) {
-            entries = stored
-        }
+        entries = DiskStore.load(key, as: [Entry].self) ?? []
     }
 
     /// Resume point for a video, or nil to start from the beginning.
@@ -290,22 +277,18 @@ final class WatchStore: ObservableObject {
         }
         if updated.count > limit { updated = Array(updated.prefix(limit)) }
         entries = updated
-        if let data = try? JSONEncoder().encode(updated) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        DiskStore.save(updated, key)
     }
 
     func clearAll() {
         entries = []
-        UserDefaults.standard.removeObject(forKey: key)
+        DiskStore.remove(key)
     }
 
     func remove(_ videoId: String) {
         if let entry = entries.first(where: { $0.ref.videoId == videoId }) { onRemove?(entry.ref) }
         entries.removeAll { $0.ref.videoId == videoId }
-        if let data = try? JSONEncoder().encode(entries) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        DiskStore.save(entries, key)
     }
 }
 

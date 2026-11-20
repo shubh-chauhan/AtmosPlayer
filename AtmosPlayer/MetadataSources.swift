@@ -409,10 +409,10 @@ enum MetaResolver {
         }
         // Streaming availability changes; everything else keeps for as long as the entry.
         if let have, have.tmdbId != nil, have.version == MetaExtras.currentVersion, have.availability?.isFresh ?? false { return have }
-        guard TMDB.isConfigured, ref.id.hasPrefix("tt") else { return have }
+        guard TMDB.isConfigured, mappable(ref.id) else { return have }
         if let running = extrasInflight[key] { return await running.value }
         let task = Task<MetaExtras?, Never> {
-            guard let found = await TMDB.find(imdb: ref.id), let details = await TMDB.details(found) else { return nil }
+            guard let found = await tmdbRef(for: ref.id), let details = await TMDB.details(found) else { return nil }
             return details.extras(imdb: ref.id)
         }
         extrasInflight[key] = task
@@ -424,8 +424,53 @@ enum MetaResolver {
         return extras
     }
 
-    /// Hero pictures already decided this session, by title and frame shape.
-    private static var heroMemo: [String: String] = [:]
+    /// Hero pictures already decided, by title and frame shape. Saved between launches, so a
+    /// title opened before shows its picture in the first frame, offline too.
+    private static var heroMemo: [String: String] = loadHeroMemo()
+    private static var heroSave: Task<Void, Never>?
+    private static let heroFile: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("hero-art-v1.json")
+
+    private static func loadHeroMemo() -> [String: String] {
+        guard let data = try? Data(contentsOf: heroFile) else { return [:] }
+        return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+    }
+
+    private static func rememberHero(_ key: String, _ art: String) {
+        heroMemo[key] = art
+        // shortcut: past 800 titles, half are dropped at random; a dropped one is decided again.
+        if heroMemo.count > 800 {
+            heroMemo = Dictionary(uniqueKeysWithValues: heroMemo.prefix(400).map { ($0.key, $0.value) })
+        }
+        heroSave?.cancel()
+        heroSave = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            let snapshot = heroMemo, url = heroFile
+            await Task.detached(priority: .utility) {
+                if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: url, options: .atomic) }
+            }.value
+        }
+    }
+
+    /// IMDb and Kitsu titles can be matched to TMDB.
+    static func mappable(_ id: String) -> Bool { id.hasPrefix("tt") || KitsuMap.kitsuNumber(id) != nil }
+
+    /// The TMDB title behind an IMDb or Kitsu id.
+    static func tmdbRef(for id: String) async -> IDMap.TMDBRef? {
+        if id.hasPrefix("tt") { return await TMDB.find(imdb: id) }
+        return await KitsuMap.tmdb(for: id)
+    }
+
+    /// Called once a card has been on screen a moment: fetches the title's details and TMDB
+    /// extras in the background, so opening it shows everything, hero art included, at once.
+    static func warm(_ ref: MetaRef) async {
+        guard mappable(ref.id) else { return }
+        if ref.id.hasPrefix("tt"), await MetaCache.entry(key(ref)) == nil {
+            _ = await resolve(ref, addons: [])
+        }
+        _ = await extras(for: ref)
+    }
 
     /// The hero picture decided for a title, if it has been: shown in the first frame.
     static func decidedHeroArt(_ ref: MetaRef, portrait: Bool) -> String? {
@@ -441,7 +486,7 @@ enum MetaResolver {
         if let decided = heroMemo[memoKey] { return decided }
         var art: String?
         var final = true
-        if TMDB.isConfigured, ref.id.hasPrefix("tt") {
+        if TMDB.isConfigured, mappable(ref.id) {
             let key = key(ref)
             let saved: MetaExtras?
             if let fromEntry = await MetaCache.entry(key)?.extras {
@@ -475,7 +520,7 @@ enum MetaResolver {
                 break
             }
         }
-        if final, let chosen { heroMemo[memoKey] = chosen }
+        if final, let chosen { rememberHero(memoKey, chosen) }
         return chosen ?? fallbacks.first
     }
 
@@ -486,7 +531,7 @@ enum MetaResolver {
 
     /// TMDB's poster or backdrop for a title whose other pictures didn't load.
     static func artwork(_ lookup: ArtworkLookup) async -> String? {
-        guard TMDB.isConfigured, lookup.id.hasPrefix("tt") else { return nil }
+        guard TMDB.isConfigured, mappable(lookup.id) else { return nil }
         let found = await extras(for: MetaRef(id: lookup.id, type: lookup.type, name: "", poster: nil))
         switch lookup.kind {
         case .poster: return found?.poster
@@ -495,7 +540,7 @@ enum MetaResolver {
     }
 
     private static func loadExtras(_ ref: MetaRef) {
-        guard TMDB.isConfigured, ref.id.hasPrefix("tt") else { return }
+        guard TMDB.isConfigured, mappable(ref.id) else { return }
         Task { _ = await extras(for: ref) }
     }
 
@@ -524,8 +569,12 @@ enum MetaResolver {
             }
         }
         // No artwork anywhere: IMDb's poster, so the page isn't an empty black hero.
-        if found.poster == nil, found.background == nil, ref.id.hasPrefix("tt"),
-           let poster = await IMDbSuggest.title(ref.id)?.poster {
+        var fallbackPoster: String?
+        if found.poster == nil, found.background == nil, mappable(ref.id) {
+            fallbackPoster = await extras(for: ref)?.poster
+            if fallbackPoster == nil, ref.id.hasPrefix("tt") { fallbackPoster = await IMDbSuggest.title(ref.id)?.poster }
+        }
+        if let poster = fallbackPoster {
             found = StremioMeta(id: found.id, type: found.type, name: found.name, poster: poster,
                                 background: found.background ?? poster, logo: found.logo,
                                 description: found.description, releaseInfo: found.releaseInfo,
@@ -534,8 +583,9 @@ enum MetaResolver {
                                 writers: found.writers, awards: found.awards, country: found.country,
                                 status: found.status, released: found.released, trailerId: found.trailerId,
                                 shareURL: found.shareURL, language: found.language)
-            provenance["poster"] = "imdb"
-            provenance["background"] = "imdb"
+            let source = poster.contains("image.tmdb.org") ? "tmdb" : "imdb"
+            provenance["poster"] = source
+            provenance["background"] = source
         }
         return (found, provenance)
     }

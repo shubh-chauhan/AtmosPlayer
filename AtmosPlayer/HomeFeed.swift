@@ -216,8 +216,27 @@ final class HomeFeed: ObservableObject {
             Spec(id: "top-series", title: "Top 10 Series Today", style: .ranked, source: .cinemeta(type: "series", id: "top", genre: nil), hero: true),
             Spec(id: "popular-movies", title: "Popular Movies", style: .poster, source: .tmdbList(kind: "movie", list: "popular")),
             Spec(id: "popular-series", title: "Popular Series", style: .poster, source: .tmdbList(kind: "tv", list: "popular")),
+            // Hindi cinema: Cinemeta's lists are mostly Hollywood, so these come from TMDB by language.
+            Spec(id: "bollywood-hits", title: "Bollywood Hits", style: .wide,
+                 source: discover("movie", ["with_original_language": "hi", "vote_count.gte": "40",
+                                            "primary_release_date.gte": Self.yearsAgo(4)]), hero: true),
+            Spec(id: "bollywood-new", title: "New Hindi Releases", style: .poster,
+                 source: discover("movie", ["with_original_language": "hi", "vote_count.gte": "3",
+                                            "primary_release_date.gte": Self.monthsAgo(8),
+                                            "primary_release_date.lte": Self.today])),
         ]
     }
+
+    private static var today: String {
+        ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
+    }
+
+    private static func monthsAgo(_ months: Int) -> String {
+        let date = Calendar.current.date(byAdding: .month, value: -months, to: Date()) ?? Date()
+        return ISO8601DateFormatter.string(from: date, timeZone: .current, formatOptions: [.withFullDate])
+    }
+
+    private static func yearsAgo(_ years: Int) -> String { monthsAgo(years * 12) }
 
     static var tmdbRestSpecs: [Spec] {
         let today = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
@@ -241,6 +260,14 @@ final class HomeFeed: ObservableObject {
             Spec(id: "g-scifi", title: "Sci-Fi & Fantasy", style: .poster, source: discover("movie", ["with_genres": "878|14"])),
             Spec(id: "g-crime", title: "Crime & Thriller", style: .poster, source: discover("movie", ["with_genres": "80|53"])),
             Spec(id: "g-action", title: "Action & Adventure", style: .poster, source: discover("movie", ["with_genres": "28|12"])),
+            Spec(id: "bollywood-classics", title: "Bollywood Classics", style: .poster,
+                 source: discover("movie", ["with_original_language": "hi", "sort_by": "vote_average.desc",
+                                            "vote_count.gte": "300"])),
+            Spec(id: "hindi-series", title: "Hindi Series", style: .poster,
+                 source: discover("tv", ["with_original_language": "hi", "vote_count.gte": "15"])),
+            Spec(id: "south-indian", title: "South Indian Blockbusters", style: .poster,
+                 source: discover("movie", ["with_original_language": "ta|te|ml|kn", "vote_count.gte": "60",
+                                            "primary_release_date.gte": Self.yearsAgo(5)])),
             Spec(id: "international", title: "International Cinema", style: .wide,
                  source: discover("movie", ["with_origin_country": "KR|JP|FR|ES|IN|IT|DE|DK|SE|MX|BR|CN|HK",
                                             "vote_count.gte": "500", "sort_by": "vote_average.desc"])),

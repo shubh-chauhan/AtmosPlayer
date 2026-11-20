@@ -416,6 +416,9 @@ final class Recommender: ObservableObject {
             "with_genres": freshIds, "sort_by": "vote_average.desc", "vote_count.gte": "2000",
         ], page: 1, kind: "movie")
 
+        // Trakt's own picks for you, when connected.
+        let traktPicks = await Self.traktCandidates()
+
         // Rows, each title in one row only where possible.
         var shown = Set<String>()
         var built: [HomeSection] = []
@@ -429,7 +432,13 @@ final class Recommender: ObservableObject {
             built.append(HomeSection(id: id, title: title, style: style, items: items))
         }
         let allSeeded = bySeed.values.flatMap { $0 }
-        add("recommended", "Recommended For You", .wide, allSeeded + fromFavorites + popular + gems, limit: 16)
+        add("recommended", "Recommended For You", .wide, allSeeded + traktPicks + fromFavorites + popular + gems, limit: 16)
+        // In Trakt's order, not re-ranked: it's their list.
+        let traktItems = traktPicks.map(\.preview).filter { !exclude.contains($0.id) && !shown.contains($0.id) }
+        if traktItems.count >= 6 {
+            built.append(HomeSection(id: "trakt-picks", title: "Recommended on Trakt", style: .poster, items: Array(traktItems.prefix(20))))
+            shown.formUnion(traktItems.prefix(10).map(\.id))
+        }
         if let seed = seeds.first, let pool = bySeed[seed.metaId] {
             let name = metas[seed.metaId]?.name ?? seed.name
             if !name.isEmpty { add("because-\(seed.metaId)", "Because You Watched \(name)", .poster, pool) }
@@ -449,6 +458,33 @@ final class Recommender: ObservableObject {
         Task.detached(priority: .utility) {
             if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
         }
+    }
+
+    /// Trakt's recommendations for you, with TMDB's details (one cached call each).
+    private static func traktCandidates() async -> [Candidate] {
+        let picks = Array(TraktAccount.shared.recommended.prefix(24))
+        guard !picks.isEmpty else { return [] }
+        let found = await withTaskGroup(of: (Int, Candidate?).self) { group in
+            for (index, pick) in picks.enumerated() {
+                group.addTask { @MainActor in
+                    guard let details = await TMDB.details(pick.tmdb) else { return (index, nil) }
+                    let meta = details.stremioMeta(imdb: pick.imdb, type: pick.tmdb.kind == .tv ? "series" : "movie")
+                    guard meta.poster != nil else { return (index, nil) }
+                    let preview = MetaPreview(id: pick.imdb, type: meta.type, name: meta.name, poster: meta.poster,
+                                              background: meta.background, logo: ArtworkURL.logo(forMetaId: pick.imdb),
+                                              description: meta.description, releaseInfo: meta.releaseInfo,
+                                              imdbRating: nil, genres: meta.genres, runtime: meta.runtime,
+                                              trailerId: meta.trailerId)
+                    return (index, Candidate(preview: preview, voteAverage: details.vote_average ?? 0,
+                                             voteCount: details.vote_count ?? 0, popularity: 0,
+                                             language: details.original_language, seeds: ["trakt"]))
+                }
+            }
+            var out: [Int: Candidate] = [:]
+            for await (index, candidate) in group { if let candidate { out[index] = candidate } }
+            return out
+        }
+        return found.keys.sorted().compactMap { found[$0] }
     }
 
     /// TMDB's "recommendations" or "similar" for one of your titles, tagged with it.

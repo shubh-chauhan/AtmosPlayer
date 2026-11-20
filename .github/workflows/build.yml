@@ -54,15 +54,22 @@ jobs:
         shell: bash
         env:
           TMDB_SECRET: ${{ secrets.TMDB_TOKEN }}
+          TRAKT_ID_SECRET: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_SECRET_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          MDBLIST_SECRET: ${{ secrets.MDBLIST_KEY }}
         run: |
           set -o pipefail
           # The TMDB read token (repo secret TMDB_TOKEN) goes into the app reversed and base64'd,
           # so it isn't sitting in the binary as plain text. Masked so it never shows in the log.
-          TMDB_TOKEN_SCRAMBLED=""
-          if [ -n "$TMDB_SECRET" ]; then
-            TMDB_TOKEN_SCRAMBLED=$(printf %s "$TMDB_SECRET" | rev | base64 | tr -d '\n')
-            echo "::add-mask::$TMDB_TOKEN_SCRAMBLED"
-          fi
+          # The optional Trakt and MDBList keys go in the same way.
+          scramble() { if [ -n "$1" ]; then printf %s "$1" | rev | base64 | tr -d '\n'; fi; }
+          TMDB_TOKEN_SCRAMBLED=$(scramble "$TMDB_SECRET")
+          TRAKT_ID_SCRAMBLED=$(scramble "$TRAKT_ID_SECRET")
+          TRAKT_SECRET_SCRAMBLED=$(scramble "$TRAKT_SECRET_SECRET")
+          MDBLIST_SCRAMBLED=$(scramble "$MDBLIST_SECRET")
+          for value in "$TMDB_TOKEN_SCRAMBLED" "$TRAKT_ID_SCRAMBLED" "$TRAKT_SECRET_SCRAMBLED" "$MDBLIST_SCRAMBLED"; do
+            if [ -n "$value" ]; then echo "::add-mask::$value"; fi
+          done
           xcodebuild build \
             -project AtmosPlayer.xcodeproj \
             -scheme AtmosPlayer \
@@ -78,6 +85,9 @@ jobs:
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia" \
             TMDB_TOKEN="$TMDB_TOKEN_SCRAMBLED" \
+            TRAKT_CLIENT_ID="$TRAKT_ID_SCRAMBLED" \
+            TRAKT_CLIENT_SECRET="$TRAKT_SECRET_SCRAMBLED" \
+            MDBLIST_KEY="$MDBLIST_SCRAMBLED" \
             2>&1 | tee build.log
 
       - name: Show compile errors
@@ -229,14 +239,21 @@ jobs:
       - name: Build for the simulator
         env:
           TMDB_SECRET: ${{ secrets.TMDB_TOKEN }}
+          TRAKT_ID_SECRET: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_SECRET_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          MDBLIST_SECRET: ${{ secrets.MDBLIST_KEY }}
         run: |
           # The TMDB read token (repo secret TMDB_TOKEN) goes into the app reversed and base64'd,
           # so it isn't sitting in the binary as plain text. Masked so it never shows in the log.
-          TMDB_TOKEN_SCRAMBLED=""
-          if [ -n "$TMDB_SECRET" ]; then
-            TMDB_TOKEN_SCRAMBLED=$(printf %s "$TMDB_SECRET" | rev | base64 | tr -d '\n')
-            echo "::add-mask::$TMDB_TOKEN_SCRAMBLED"
-          fi
+          # The optional Trakt and MDBList keys go in the same way.
+          scramble() { if [ -n "$1" ]; then printf %s "$1" | rev | base64 | tr -d '\n'; fi; }
+          TMDB_TOKEN_SCRAMBLED=$(scramble "$TMDB_SECRET")
+          TRAKT_ID_SCRAMBLED=$(scramble "$TRAKT_ID_SECRET")
+          TRAKT_SECRET_SCRAMBLED=$(scramble "$TRAKT_SECRET_SECRET")
+          MDBLIST_SCRAMBLED=$(scramble "$MDBLIST_SECRET")
+          for value in "$TMDB_TOKEN_SCRAMBLED" "$TRAKT_ID_SCRAMBLED" "$TRAKT_SECRET_SCRAMBLED" "$MDBLIST_SCRAMBLED"; do
+            if [ -n "$value" ]; then echo "::add-mask::$value"; fi
+          done
           xcodebuild build \
             -project AtmosPlayer.xcodeproj \
             -scheme AtmosPlayer \
@@ -249,7 +266,10 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             TEST_MEDIA_BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/TestMedia" \
-            TMDB_TOKEN="$TMDB_TOKEN_SCRAMBLED"
+            TMDB_TOKEN="$TMDB_TOKEN_SCRAMBLED" \
+            TRAKT_CLIENT_ID="$TRAKT_ID_SCRAMBLED" \
+            TRAKT_CLIENT_SECRET="$TRAKT_SECRET_SCRAMBLED" \
+            MDBLIST_KEY="$MDBLIST_SCRAMBLED"
 
       - name: Screenshot screens
         run: |

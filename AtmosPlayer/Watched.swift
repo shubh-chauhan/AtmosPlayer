@@ -89,19 +89,21 @@ final class WatchedStore: ObservableObject {
         /// Stremio's copy, decoded once the title's episode list is known.
         var remoteField: String?
         var remoteChanged: Date = .distantPast
+        /// What Trakt has as watched, kept so a newer Stremio copy can't drop it.
+        var trakt: Set<String>?
     }
 
     @Published private(set) var records: [String: Record] = [:]
     /// Set by the app: sends a title's watched state to Stremio.
     var onChange: ((_ metaId: String, _ type: String, _ watched: Set<String>, _ videoIds: [String]?) -> Void)?
+    /// Set by the app: marks changed by hand (not by finishing playback, which Trakt's
+    /// scrobble already records), for Trakt's history.
+    var onMarkByHand: ((_ metaId: String, _ type: String, _ ids: [String], _ watched: Bool) -> Void)?
 
     private let key = "watched.v1"
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let stored = try? JSONDecoder().decode([String: Record].self, from: data) {
-            records = stored
-        }
+        records = DiskStore.load(key, as: [String: Record].self) ?? [:]
     }
 
     func isWatched(_ videoId: String, metaId: String) -> Bool {
@@ -112,19 +114,37 @@ final class WatchedStore: ObservableObject {
 
     /// Marks videos watched or unwatched here and in Stremio. `videoIds` is the title's full
     /// episode list in the addon's order (nil for movies).
-    func set(_ ids: [String], watched: Bool, metaId: String, type: String, videoIds: [String]?) {
+    func set(_ ids: [String], watched: Bool, metaId: String, type: String, videoIds: [String]?,
+             byHand: Bool = true) {
         var record = records[metaId] ?? Record()
-        if watched { record.videos.formUnion(ids) } else { record.videos.subtract(ids) }
+        if watched {
+            record.videos.formUnion(ids)
+        } else {
+            record.videos.subtract(ids)
+            record.trakt?.subtract(ids)
+        }
         record.changed = Date()
         records[metaId] = record
         save()
         onChange?(metaId, type, record.videos, videoIds)
+        if byHand { onMarkByHand?(metaId, type, ids, watched) }
     }
 
     /// A movie or episode played to the end.
     func markFinished(_ ref: VideoRef) {
         guard !isWatched(ref.videoId, metaId: ref.metaId) else { return }
-        set([ref.videoId], watched: true, metaId: ref.metaId, type: ref.type, videoIds: nil)
+        set([ref.videoId], watched: true, metaId: ref.metaId, type: ref.type, videoIds: nil, byHand: false)
+    }
+
+    /// From a Trakt sync: what Trakt has as watched for a title is added here (never removed,
+    /// and Stremio isn't written to; a later Stremio copy keeps these marks).
+    func adoptTrakt(metaId: String, ids: Set<String>) {
+        var record = records[metaId] ?? Record()
+        guard record.trakt != ids || !ids.isSubset(of: record.videos) else { return }
+        record.trakt = ids
+        record.videos.formUnion(ids)
+        records[metaId] = record
+        save()
     }
 
     /// From a Stremio sync. Movies apply at once; a series' field waits for its episode list.
@@ -132,7 +152,8 @@ final class WatchedStore: ObservableObject {
         var record = records[metaId] ?? Record()
         guard modified > record.changed else { return }
         if type == "movie" {
-            let videos: Set<String> = movieWatched ? [metaId] : []
+            let remote: Set<String> = movieWatched ? [metaId] : []
+            let videos = remote.union(record.trakt ?? [])
             guard videos != record.videos else { return }
             record.videos = videos
             record.changed = modified
@@ -149,7 +170,7 @@ final class WatchedStore: ObservableObject {
     func reconcile(metaId: String, videoIds: [String]) {
         guard var record = records[metaId], let field = record.remoteField,
               record.remoteChanged > record.changed else { return }
-        record.videos = WatchedBitfield.decode(field, videoIds: videoIds)
+        record.videos = WatchedBitfield.decode(field, videoIds: videoIds).union(record.trakt ?? [])
         record.changed = record.remoteChanged
         records[metaId] = record
         save()
@@ -157,12 +178,10 @@ final class WatchedStore: ObservableObject {
 
     func clearAll() {
         records = [:]
-        UserDefaults.standard.removeObject(forKey: key)
+        DiskStore.remove(key)
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(records) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        DiskStore.save(records, key)
     }
 }

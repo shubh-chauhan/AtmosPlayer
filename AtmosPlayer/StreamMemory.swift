@@ -57,10 +57,7 @@ final class LastStreamStore {
     private var byTitle: [String: SavedStream] = [:]
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let stored = try? JSONDecoder().decode([String: SavedStream].self, from: data) {
-            byTitle = stored
-        }
+        byTitle = DiskStore.load(key, as: [String: SavedStream].self) ?? [:]
     }
 
     func stream(forTitle metaId: String) -> SavedStream? { byTitle[metaId] }
@@ -72,9 +69,7 @@ final class LastStreamStore {
             let oldest = byTitle.sorted { $0.value.saved < $1.value.saved }.prefix(byTitle.count - 300)
             for (key, _) in oldest { byTitle[key] = nil }
         }
-        if let data = try? JSONEncoder().encode(byTitle) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        DiskStore.save(byTitle, key)
     }
 }
 
@@ -92,22 +87,71 @@ enum QuickPlay {
 
     /// The stream to start without showing the list:
     /// - the exact stream last played for this movie / episode, or
-    /// - for another episode of a series, the same release (bingeGroup) from the same addon.
+    /// - for another episode of a series, the same release (bingeGroup) from the same addon, or
+    /// - with "Play starts the best stream" on (Settings), the best one your addons have.
     /// Returns nil when the user should pick from the stream list.
     @MainActor
     static func resolve(video: VideoRef, queue: [VideoRef], addons: AddonStore) async -> PlayItem? {
-        guard let last = LastStreamStore.shared.stream(forTitle: video.metaId) else { return nil }
-        if last.videoId == video.videoId {
-            return item(video: video, queue: queue, stream: last)
+        if let last = LastStreamStore.shared.stream(forTitle: video.metaId) {
+            if last.videoId == video.videoId {
+                return item(video: video, queue: queue, stream: last)
+            }
+            if let group = last.bingeGroup,
+               let addon = addons.addons.first(where: { $0.id == last.addonId }),
+               addon.manifest.supports("stream", type: video.type, id: video.videoId),
+               let streams = try? await StremioClient.streams(addon, type: video.type, id: video.videoId),
+               let match = streams.first(where: { $0.bingeGroup == group && $0.playableURL != nil }) {
+                return item(video: video, queue: queue,
+                            stream: SavedStream(match, addonId: addon.id, videoId: video.videoId))
+            }
         }
-        guard let group = last.bingeGroup,
-              let addon = addons.addons.first(where: { $0.id == last.addonId }),
-              addon.manifest.supports("stream", type: video.type, id: video.videoId),
-              let streams = try? await StremioClient.streams(addon, type: video.type, id: video.videoId),
-              let match = streams.first(where: { $0.bingeGroup == group && $0.playableURL != nil }) else {
-            return nil
+        return autoPickOn ? await best(video: video, queue: queue, addons: addons) : nil
+    }
+
+    static let autoPickKey = "streams.autoPickBest"
+    static var autoPickOn: Bool { Prefs.bool(autoPickKey, default: true) }
+
+    /// Every addon asked at once (10 s at most); the best playable stream that passes your saved
+    /// filters starts: resolution, then Dolby Vision / HDR, then Atmos and lossless sound, then
+    /// source, the first addon in your order winning a tie. Never a camera recording.
+    @MainActor
+    static func best(video: VideoRef, queue: [VideoRef], addons: AddonStore) async -> PlayItem? {
+        let sources = addons.supporting("stream", type: video.type, id: video.videoId)
+        guard !sources.isEmpty else { return nil }
+        let selected = StreamFilterStore.decode(UserDefaults.standard.string(forKey: StreamFilterStore.key) ?? "")
+        let found = await withTaskGroup(of: (Int, [StremioStream]).self) { group in
+            for (index, addon) in sources.enumerated() {
+                group.addTask { (index, (try? await StremioClient.streams(addon, type: video.type, id: video.videoId)) ?? []) }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                return (-1, [])
+            }
+            var out: [Int: [StremioStream]] = [:]
+            for await (index, streams) in group {
+                if index < 0 { break }
+                out[index] = streams
+                if out.count == sources.count { break }
+            }
+            group.cancelAll()
+            return out
         }
+        guard let pick = pickBest(sources.indices.map { found[$0] ?? [] }, selected: selected) else { return nil }
         return item(video: video, queue: queue,
-                    stream: SavedStream(match, addonId: addon.id, videoId: video.videoId))
+                    stream: SavedStream(pick.stream, addonId: sources[pick.addon].id, videoId: video.videoId))
+    }
+
+    /// The best stream across addons' answers (in addon order): highest quality score among
+    /// playable ones that pass `selected`, earliest on a tie. No camera recordings.
+    static func pickBest(_ answers: [[StremioStream]], selected: Set<StreamFilter>) -> (addon: Int, stream: StremioStream)? {
+        var pick: (addon: Int, stream: StremioStream, score: Int)?
+        for (index, streams) in answers.enumerated() {
+            for stream in streams where stream.playableURL != nil && stream.traits.source != .cam
+                && StreamFilter.matches(stream.traits, selected: selected) {
+                let score = stream.traits.qualityScore
+                if pick == nil || score > pick!.score { pick = (index, stream, score) }
+            }
+        }
+        return pick.map { ($0.addon, $0.stream) }
     }
 }
