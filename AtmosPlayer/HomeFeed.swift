@@ -392,10 +392,11 @@ final class HomeFeed: ObservableObject {
     }
 
     private static func section(_ spec: Spec, _ items: [MetaPreview]) -> HomeSection? {
-        var list = items.filter { $0.poster != nil }
+        // IMDb titles without art of their own still get MetaHub's or TMDB's on the card.
+        var list = items.filter { $0.poster != nil || $0.id.hasPrefix("tt") }
         switch spec.style {
         case .ranked: list = Array(list.prefix(10))
-        case .wide: list = Array(list.filter { $0.background != nil }.prefix(16))
+        case .wide: list = Array(list.filter { $0.background != nil || $0.id.hasPrefix("tt") }.prefix(16))
         case .poster: list = Array(list.prefix(20))
         }
         guard list.count >= 4 else { return nil }

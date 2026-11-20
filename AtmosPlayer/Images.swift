@@ -12,6 +12,9 @@ actor ImagePipeline {
     // NSCache is thread-safe, so the synchronous cache check can skip the actor hop.
     private nonisolated(unsafe) let memory = NSCache<NSString, UIImage>()
     private var inflight: [String: Task<UIImage?, Never>] = [:]
+    /// Addresses that just failed, skipped for a couple of minutes so the next candidate in a
+    /// card's list is tried at once instead of waiting on the same failure again.
+    private var failed: [String: Date] = [:]
     private let session: URLSession
 
     init() {
@@ -45,6 +48,7 @@ actor ImagePipeline {
         let key = Self.key(url, maxPixel)
         if let hit = memory.object(forKey: key as NSString) { return hit }
         if let running = inflight[key] { return await running.value }
+        if let when = failed[key], Date().timeIntervalSince(when) < 120 { return nil }
 
         let session = self.session
         let task = Task<UIImage?, Never>.detached(priority: .utility) {
@@ -57,6 +61,9 @@ actor ImagePipeline {
         if let result {
             let cost = Int(result.size.width * result.size.height * result.scale * result.scale * 4)
             memory.setObject(result, forKey: key as NSString, cost: cost)
+            failed[key] = nil
+        } else {
+            failed[key] = Date()
         }
         return result
     }
@@ -84,6 +91,30 @@ actor ImagePipeline {
 /// 500×750 ("medium") and 780×1170 ("large").
 enum ArtworkURL {
     /// The title's logo from MetaHub (what Cinemeta itself lists), for IMDb ids.
+    /// A title's posters, best first: TMDB's when the title came with one, then MetaHub's (the
+    /// art Cinemeta lists, at the size needed), then whatever its addon gave.
+    static func posters(id: String?, poster: String?) -> [String] {
+        ranked(id: id, own: poster) { "https://images.metahub.space/poster/medium/\($0)/img" }
+    }
+
+    /// Backdrops ranked the same way, with the poster last so a card is never left empty.
+    static func backdrops(id: String?, background: String?, poster: String? = nil) -> [String] {
+        var list = ranked(id: id, own: background) { "https://images.metahub.space/background/medium/\($0)/img" }
+        if let poster, !list.contains(poster) { list.append(poster) }
+        return list
+    }
+
+    private static func ranked(id: String?, own: String?, metaHub: (String) -> String) -> [String] {
+        var list: [String] = []
+        if let own, own.contains("image.tmdb.org") { list.append(own) }
+        if let id, id.hasPrefix("tt") { list.append(metaHub(id)) }
+        // Cinemeta's own address is MetaHub's at another size: already in the list.
+        if let own, !list.contains(own), !(own.contains("images.metahub.space") && id?.hasPrefix("tt") == true) {
+            list.append(own)
+        }
+        return list
+    }
+
     static func logo(forMetaId id: String?) -> String? {
         guard let id, id.hasPrefix("tt") else { return nil }
         return "https://images.metahub.space/logo/medium/\(id)/img"
@@ -108,20 +139,37 @@ enum ArtworkURL {
 /// A remote image that fills its frame (cropping, never growing past it). `maxPixel` is the
 /// longest side, in pixels, it is decoded to: about the shown size in points times three.
 struct RemoteImage: View {
-    let url: String?
+    /// Addresses best first: when one doesn't load, the next is tried.
+    let candidates: [String]
+    /// Asked last, when none of the addresses load.
+    var lookup: ArtworkLookup?
     var maxPixel: Int = 400
     var placeholderSymbol: String = "film"
 
     @State private var image: UIImage?
 
     init(url: String?, maxPixel: Int = 400, placeholderSymbol: String = "film") {
-        self.url = url
+        self.init(candidates: url.map { [$0] } ?? [], maxPixel: maxPixel, placeholderSymbol: placeholderSymbol)
+    }
+
+    init(candidates: [String], lookup: ArtworkLookup? = nil, maxPixel: Int = 400, placeholderSymbol: String = "film") {
+        self.candidates = candidates
+        self.lookup = lookup
         self.maxPixel = maxPixel
         self.placeholderSymbol = placeholderSymbol
         // Already decoded: show it in the first frame instead of flashing the placeholder.
-        if let resolved = ArtworkURL.best(url, maxPixel: maxPixel) {
-            _image = State(initialValue: ImagePipeline.shared.cached(resolved, maxPixel: maxPixel))
+        for candidate in candidates {
+            if let resolved = ArtworkURL.best(candidate, maxPixel: maxPixel),
+               let hit = ImagePipeline.shared.cached(resolved, maxPixel: maxPixel) {
+                _image = State(initialValue: hit)
+                break
+            }
         }
+    }
+
+    private struct LoadKey: Hashable {
+        let candidates: [String]
+        let lookup: ArtworkLookup?
     }
 
     var body: some View {
@@ -143,21 +191,40 @@ struct RemoteImage: View {
                 }
             }
             .clipped()
-            .task(id: url) {
-                guard let resolved = ArtworkURL.best(url, maxPixel: maxPixel) else {
+            .task(id: LoadKey(candidates: candidates, lookup: lookup)) {
+                if candidates.isEmpty && lookup == nil {
                     image = nil
                     return
                 }
-                if let hit = ImagePipeline.shared.cached(resolved, maxPixel: maxPixel) {
-                    if image !== hit { image = hit }
-                    return
+                for candidate in candidates {
+                    guard let resolved = ArtworkURL.best(candidate, maxPixel: maxPixel) else { continue }
+                    if let hit = ImagePipeline.shared.cached(resolved, maxPixel: maxPixel) {
+                        if image !== hit { image = hit }
+                        return
+                    }
+                    if let loaded = await ImagePipeline.shared.image(resolved, maxPixel: maxPixel) {
+                        if !Task.isCancelled { withAnimation(.easeOut(duration: 0.2)) { image = loaded } }
+                        return
+                    }
+                    if Task.isCancelled { return }
                 }
-                let loaded = await ImagePipeline.shared.image(resolved, maxPixel: maxPixel)
-                if !Task.isCancelled, let loaded {
-                    withAnimation(.easeOut(duration: 0.2)) { image = loaded }
-                }
+                // None loaded: TMDB's art for the title, when it has some.
+                guard let lookup, let found = await MetaResolver.artwork(lookup), !candidates.contains(found),
+                      let resolved = ArtworkURL.best(found, maxPixel: maxPixel),
+                      let loaded = await ImagePipeline.shared.image(resolved, maxPixel: maxPixel),
+                      !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.2)) { image = loaded }
             }
     }
+}
+
+/// The last place a picture is looked for when none of its addresses load: TMDB's art for
+/// the title (IMDb ids only).
+struct ArtworkLookup: Hashable {
+    enum Kind: Hashable { case poster, backdrop }
+    let id: String
+    let type: String
+    let kind: Kind
 }
 
 extension ArtworkURL {

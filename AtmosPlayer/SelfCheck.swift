@@ -203,6 +203,18 @@ enum SelfCheck {
         expect(repeats.isEmpty, "no title in two rows: \(repeats.prefix(3))")
         expect(top.count + rest.count == (HomeFeed.topSpecs + HomeFeed.restSpecs).count, "every row kept")
 
+        // Artwork: best source first, the next ones to fall back on.
+        let tmdbPoster = "https://image.tmdb.org/t/p/w500/a.jpg"
+        let hubPoster = "https://images.metahub.space/poster/medium/tt1/img"
+        expect(ArtworkURL.posters(id: "tt1", poster: tmdbPoster) == [tmdbPoster, hubPoster], "TMDB poster, then MetaHub")
+        expect(ArtworkURL.posters(id: "tt1", poster: "https://addon.example/p.jpg") == [hubPoster, "https://addon.example/p.jpg"],
+               "MetaHub before an addon's own poster")
+        expect(ArtworkURL.posters(id: "tt1", poster: "https://images.metahub.space/poster/small/tt1/img") == [hubPoster],
+               "Cinemeta's poster not tried twice")
+        expect(ArtworkURL.posters(id: "kitsu:1", poster: "https://addon.example/p.jpg") == ["https://addon.example/p.jpg"],
+               "non-IMDb titles keep their addon's poster")
+        expect(ArtworkURL.backdrops(id: "tt1", background: nil, poster: "p").last == "p", "poster is the last backdrop")
+
         // Saved rows read back through the Stremio decoder.
         let item = MetaPreview(id: "tt1", type: "series", name: "N", poster: "p", background: nil, logo: "l",
                                description: nil, releaseInfo: "2021", imdbRating: "8.0", genres: ["Drama"],

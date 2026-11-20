@@ -434,8 +434,8 @@ enum MetaResolver {
 
     /// Decides a title's hero picture once and decodes it before returning, so a page shows
     /// one picture instead of a stand-in swapped a moment later. TMDB's text-free art when it's
-    /// saved or arrives within `wait` seconds, else `fallback`.
-    static func heroArt(for ref: MetaRef, portrait: Bool, fallback: String?, maxPixel: Int,
+    /// saved or arrives within `wait` seconds, else the first of `fallbacks` that loads.
+    static func heroArt(for ref: MetaRef, portrait: Bool, fallbacks: [String], maxPixel: Int,
                         wait: Double = 2.5) async -> String? {
         let memoKey = "\(key(ref))/\(portrait)"
         if let decided = heroMemo[memoKey] { return decided }
@@ -468,15 +468,30 @@ enum MetaResolver {
                 final = first.fetched
             }
         }
-        var chosen = fallback
-        if let art, let url = ArtworkURL.best(art, maxPixel: maxPixel),
-           await ImagePipeline.shared.image(url, maxPixel: maxPixel) != nil {
-            chosen = art
-        } else {
-            await ImagePipeline.shared.prefetch(fallback, maxPixel: maxPixel)
+        var chosen: String?
+        for candidate in [art].compactMap({ $0 }) + fallbacks {
+            if await loads(candidate, maxPixel: maxPixel) {
+                chosen = candidate
+                break
+            }
         }
         if final, let chosen { heroMemo[memoKey] = chosen }
-        return chosen
+        return chosen ?? fallbacks.first
+    }
+
+    private static func loads(_ raw: String, maxPixel: Int) async -> Bool {
+        guard let url = ArtworkURL.best(raw, maxPixel: maxPixel) else { return false }
+        return await ImagePipeline.shared.image(url, maxPixel: maxPixel) != nil
+    }
+
+    /// TMDB's poster or backdrop for a title whose other pictures didn't load.
+    static func artwork(_ lookup: ArtworkLookup) async -> String? {
+        guard TMDB.isConfigured, lookup.id.hasPrefix("tt") else { return nil }
+        let found = await extras(for: MetaRef(id: lookup.id, type: lookup.type, name: "", poster: nil))
+        switch lookup.kind {
+        case .poster: return found?.poster
+        case .backdrop: return found?.backdrop ?? found?.textlessBackdrop
+        }
     }
 
     private static func loadExtras(_ ref: MetaRef) {

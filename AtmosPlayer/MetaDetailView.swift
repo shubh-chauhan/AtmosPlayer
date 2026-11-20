@@ -29,6 +29,9 @@ struct MetaDetailView: View {
     @State private var extras: MetaExtras?
     /// Set once the hero picture is decided (and decoded), so it appears once, not swapped.
     @State private var heroReady = false
+    @State private var heroChosen: String?
+    /// TMDB's episode stills by Stremio video id, for episodes whose own picture doesn't load.
+    @State private var stills: [String: String] = [:]
     /// The navigation bar fades in once the backdrop has scrolled away.
     @State private var showBar = false
     /// Trailer preview behind the title: shown, sound on, and whether this page is on top.
@@ -138,9 +141,6 @@ struct MetaDetailView: View {
                         if let meta {
                             RatingsRow(meta: meta, tmdbRating: extras?.tmdbRating)
                         }
-                        if let availability = extras?.availability, !availability.offers.isEmpty {
-                            WhereToWatch(availability: availability)
-                        }
                         if isSeries && !orderedVideos.isEmpty {
                             VStack(alignment: .leading, spacing: 14) {
                                 seasonPicker
@@ -166,13 +166,16 @@ struct MetaDetailView: View {
                             Shelf(title: "More Like This") {
                                 ForEach(similar) { item in
                                     NavigationLink(value: MetaRef(item)) {
-                                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster)
+                                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, id: item.id, type: item.type)
                                     }
                                     .buttonStyle(CardButtonStyle())
                                 }
                             }
                         }
                         aboutBlock
+                        if let availability = extras?.availability, !availability.offers.isEmpty {
+                            WhereToWatch(availability: availability)
+                        }
                     }
                     .padding(.top, 22)
                     .padding(.bottom, 44)
@@ -214,9 +217,22 @@ struct MetaDetailView: View {
             if let meta, similar.isEmpty { similar = await SimilarTitles.find(for: meta) }
         }
         .task(id: wide) {
-            _ = await MetaResolver.heroArt(for: ref, portrait: !wide, fallback: background,
-                                           maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800)
-            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.25)) { heroReady = true } }
+            let picked = await MetaResolver.heroArt(for: ref, portrait: !wide,
+                                                    fallbacks: ArtworkURL.backdrops(id: ref.id, background: background,
+                                                                                    poster: meta?.poster ?? ref.poster),
+                                                    maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800)
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.25)) { heroChosen = picked; heroReady = true } }
+        }
+        .task(id: season) {
+            // TMDB's stills for the season on screen: the next place to look for an episode's picture.
+            guard isSeries, TMDB.isConfigured, ref.id.hasPrefix("tt"),
+                  let found = await TMDB.find(imdb: ref.id), found.kind == .tv,
+                  let details = await TMDB.details(found, seasons: [season]) else { return }
+            var next = stills
+            for video in details.videos(imdb: ref.id) {
+                if let thumbnail = video.thumbnail { next[video.id] = thumbnail }
+            }
+            if !Task.isCancelled, next != stills { stills = next }
         }
         .task {
             let found = await MetaResolver.extras(for: ref)
@@ -249,7 +265,7 @@ struct MetaDetailView: View {
                 // TMDB's text-free art when there is one: no printed title behind the logo, and
                 // on a phone a portrait poster, so the tall frame isn't a crop of a wide picture.
                 // Nothing until it's decided, so the page never shows a stand-in first.
-                RemoteImage(url: MetaResolver.decidedHeroArt(ref, portrait: !wide) ?? (heroReady ? background : nil),
+                RemoteImage(url: MetaResolver.decidedHeroArt(ref, portrait: !wide) ?? (heroReady ? heroChosen ?? background : nil),
                             maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800,
                             placeholderSymbol: "")
                     .frame(width: geo.size.width, height: height + stretch)
@@ -507,13 +523,25 @@ struct MetaDetailView: View {
         .sensoryFeedback(.selection, trigger: season)
     }
 
+    /// Where an episode's picture is looked for when its own doesn't load, best first: TMDB's
+    /// still, MetaHub's, then the show's backdrop.
+    private func episodeFallbacks(_ video: StremioMeta.Video) -> [String] {
+        var list: [String] = []
+        if let still = stills[video.id] { list.append(still) }
+        if ref.id.hasPrefix("tt"), let season = video.season, let episode = video.episode {
+            list.append("https://episodes.metahub.space/\(ref.id)/\(season)/\(episode)/w780.jpg")
+        }
+        return list + ArtworkURL.backdrops(id: ref.id, background: meta?.background ?? ref.background)
+    }
+
     private var episodeShelf: some View {
         ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: 14) {
                 ForEach(episodes) { video in
                     let done = isWatched(video.id)
                     Button { streamsRoute = route(for: video) } label: {
-                        EpisodeCard(video: video, progress: progress(for: video), watched: done)
+                        EpisodeCard(video: video, progress: progress(for: video), watched: done,
+                                    fallbacks: episodeFallbacks(video))
                     }
                     .buttonStyle(CardButtonStyle())
                     .contextMenu {
@@ -790,12 +818,15 @@ struct EpisodeCard: View {
     let video: StremioMeta.Video
     let progress: Double?
     var watched: Bool = false
+    /// Tried in turn when the episode's own picture doesn't load.
+    var fallbacks: [String] = []
     private let width: CGFloat = Device.size(280)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                RemoteImage(url: video.thumbnail, maxPixel: 900, placeholderSymbol: "tv")
+                RemoteImage(candidates: [video.thumbnail].compactMap { $0 } + fallbacks.filter { $0 != video.thumbnail },
+                            maxPixel: 900, placeholderSymbol: "tv")
                     .frame(width: width, height: width * 9 / 16)
                     .opacity(video.upcoming ? 0.45 : 1)
                 if let progress, !watched {

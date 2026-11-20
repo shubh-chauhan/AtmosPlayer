@@ -173,11 +173,15 @@ struct PosterCard: View {
     let title: String
     let subtitle: String?
     let poster: String?
+    /// The title's id and type: other places to find its poster when this one doesn't load.
+    var id: String?
+    var type: String = "movie"
     var width: CGFloat = Device.size(124)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RemoteImage(url: poster, maxPixel: 720)
+            RemoteImage(candidates: ArtworkURL.posters(id: id, poster: poster),
+                        lookup: id.map { ArtworkLookup(id: $0, type: type, kind: .poster) }, maxPixel: 720)
                 .frame(width: width, height: width * 1.5)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.08)))
@@ -337,7 +341,7 @@ struct SearchScreen: View {
 
     private func resultCard(_ item: MetaPreview) -> some View {
         NavigationLink(value: MetaRef(item)) {
-            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
+            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, id: item.id, type: item.type, width: Device.size(104))
         }
         .buttonStyle(CardButtonStyle())
         .simultaneousGesture(TapGesture().onEnded { remember(trimmed) })
@@ -416,7 +420,7 @@ struct SearchScreen: View {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(popular.items) { item in
                         NavigationLink(value: MetaRef(item)) {
-                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, id: item.id, type: item.type, width: Device.size(104))
                         }
                         .buttonStyle(CardButtonStyle())
                     }
@@ -430,9 +434,9 @@ struct SearchScreen: View {
         ForEach(addonRows) { row in
             Shelf(title: row.title,
                   seeAll: row.source.map { CatalogRoute(title: row.title, type: "", catalogId: "", source: $0) }) {
-                ForEach(row.items.filter { $0.poster != nil }.prefix(20)) { item in
+                ForEach(row.items.filter { $0.poster != nil || $0.id.hasPrefix("tt") }.prefix(20)) { item in
                     NavigationLink(value: MetaRef(item)) {
-                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster)
+                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, id: item.id, type: item.type)
                     }
                     .buttonStyle(CardButtonStyle())
                 }

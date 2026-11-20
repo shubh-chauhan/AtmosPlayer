@@ -362,7 +362,7 @@ struct PersonScreen: View {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(items) { item in
                         NavigationLink(value: MetaRef(item)) {
-                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, id: item.id, type: item.type, width: Device.size(104))
                         }
                         .buttonStyle(CardButtonStyle())
                     }

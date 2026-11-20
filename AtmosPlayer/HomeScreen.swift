@@ -59,7 +59,7 @@ struct HomeScreen: View {
                         Shelf(title: "My List") {
                             ForEach(favorites.items, id: \.id) { ref in
                                 NavigationLink(value: ref) {
-                                    PosterCard(title: ref.name, subtitle: nil, poster: ref.poster)
+                                    PosterCard(title: ref.name, subtitle: nil, poster: ref.poster, id: ref.id, type: ref.type)
                                 }
                                 .buttonStyle(CardButtonStyle())
                             }
@@ -110,7 +110,7 @@ struct HomeScreen: View {
                         Shelf(title: "From Your Stremio Library") {
                             ForEach(account.library, id: \.id) { ref in
                                 NavigationLink(value: ref) {
-                                    PosterCard(title: ref.name, subtitle: nil, poster: ref.poster)
+                                    PosterCard(title: ref.name, subtitle: nil, poster: ref.poster, id: ref.id, type: ref.type)
                                 }
                                 .buttonStyle(CardButtonStyle())
                             }
@@ -307,7 +307,7 @@ struct HomeSectionView: View {
             Shelf(title: section.title, seeAll: section.seeAll) {
                 ForEach(section.items) { item in
                     NavigationLink(value: MetaRef(item)) {
-                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster)
+                        PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, id: item.id, type: item.type)
                     }
                     .buttonStyle(CardButtonStyle())
                 }
@@ -324,7 +324,8 @@ struct RankedCard: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: rank == 10 ? -30 : -18) {
             RankNumber(rank: rank)
-            RemoteImage(url: item.poster, maxPixel: 600)
+            RemoteImage(candidates: ArtworkURL.posters(id: item.id, poster: item.poster),
+                        lookup: ArtworkLookup(id: item.id, type: item.type, kind: .poster), maxPixel: 600)
                 .frame(width: Device.size(112), height: Device.size(168))
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.08)))
@@ -363,7 +364,8 @@ struct WideCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             ZStack(alignment: .bottomLeading) {
-                RemoteImage(url: item.background ?? item.poster, maxPixel: 900)
+                RemoteImage(candidates: ArtworkURL.backdrops(id: item.id, background: item.background, poster: item.poster),
+                            lookup: ArtworkLookup(id: item.id, type: item.type, kind: .backdrop), maxPixel: 900)
                 LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
                 if let logo = item.logo, let url = URL(string: logo) {
                     LogoImage(url: url, failed: .constant(false))
@@ -603,7 +605,9 @@ struct HeroCarousel: View {
             guard let index = items.firstIndex(where: { $0.id == activeId }), items.count > 1 else { return }
             for neighbour in [items[(index + 1) % items.count], items[(index + items.count - 1) % items.count]] {
                 _ = await MetaResolver.heroArt(for: MetaRef(neighbour), portrait: !wide,
-                                               fallback: neighbour.background ?? neighbour.poster, maxPixel: 1800)
+                                               fallbacks: ArtworkURL.backdrops(id: neighbour.id, background: neighbour.background,
+                                                                               poster: neighbour.poster),
+                                               maxPixel: 1800)
             }
         }
         // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
@@ -683,6 +687,8 @@ struct HeroCard: View {
     /// Set once the card's picture is decided (TMDB's text-free art, or the backdrop), so it
     /// appears once instead of being swapped a moment later.
     @State private var ready = false
+    /// The picture picked when TMDB's art wasn't decided in time.
+    @State private var chosen: String?
     @EnvironmentObject private var favorites: FavoritesStore
     @Environment(\.verticalSizeClass) private var verticalSize
     /// Landscape iPhone: little height, so a smaller logo and shorter synopsis.
@@ -697,7 +703,7 @@ struct HeroCard: View {
                 Color.clear
                     .overlay {
                         RemoteImage(url: MetaResolver.decidedHeroArt(MetaRef(item), portrait: !wide)
-                                        ?? (ready ? item.background ?? item.poster : nil),
+                                        ?? (ready ? chosen : nil),
                                     maxPixel: 1800, placeholderSymbol: "")
                             .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
                             .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
@@ -746,9 +752,11 @@ struct HeroCard: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
         .task(id: "\(item.id)/\(wide)") {
-            _ = await MetaResolver.heroArt(for: MetaRef(item), portrait: !wide,
-                                           fallback: item.background ?? item.poster, maxPixel: 1800)
-            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { ready = true } }
+            let picked = await MetaResolver.heroArt(for: MetaRef(item), portrait: !wide,
+                                                    fallbacks: ArtworkURL.backdrops(id: item.id, background: item.background,
+                                                                                    poster: item.poster),
+                                                    maxPixel: 1800)
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { chosen = picked; ready = true } }
         }
     }
 
@@ -961,7 +969,7 @@ struct CatalogGridScreen: View {
                 LazyVGrid(columns: columns, spacing: 18) {
                     ForEach(items) { item in
                         NavigationLink(value: MetaRef(item)) {
-                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, width: Device.size(104))
+                            PosterCard(title: item.name, subtitle: item.releaseInfo, poster: item.poster, id: item.id, type: item.type, width: Device.size(104))
                         }
                         .buttonStyle(CardButtonStyle())
                         .onAppear {
