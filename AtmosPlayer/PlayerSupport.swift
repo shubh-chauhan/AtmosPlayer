@@ -31,7 +31,9 @@ final class PlayerStatus: ObservableObject {
         state = engine.state
         hasFirstFrame = engine.hasFirstFrameReadyForDisplay
 
-        engine.$state.removeDuplicates().receive(on: RunLoop.main)
+        // DispatchQueue, not RunLoop: the run loop holds these back while a finger is on the
+        // screen, which made play / pause trail the tap.
+        engine.$state.removeDuplicates().receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.state = $0 }.store(in: &cancellables)
         engine.$hasFirstFrameReadyForDisplay.removeDuplicates().receive(on: RunLoop.main)
             .sink { [weak self] in self?.hasFirstFrame = $0 }.store(in: &cancellables)
@@ -42,7 +44,7 @@ final class PlayerStatus: ObservableObject {
                 default: return false
                 }
             }
-            .removeDuplicates().receive(on: RunLoop.main)
+            .removeDuplicates().receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.busy = $0 }.store(in: &cancellables)
         engine.$mediaChapters.map { !$0.isEmpty }.removeDuplicates().receive(on: RunLoop.main)
             .sink { [weak self] in self?.hasChapters = $0 }.store(in: &cancellables)

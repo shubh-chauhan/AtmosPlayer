@@ -66,6 +66,10 @@ struct PlayerView: View {
     @State private var stills = ScrubStillSource()
     /// Whether it was playing when the app left the screen, to come back the same way.
     @State private var playingWhenLeft = false
+    /// What a tap on play / pause asked for, shown at once; the engine's own state replaces it
+    /// as soon as it arrives (or after a moment, if it never changes).
+    @State private var playIntent: Bool?
+    @State private var playIntentReset: Task<Void, Never>?
 
     enum NextState: Equatable {
         case idle
@@ -241,6 +245,10 @@ struct PlayerView: View {
                 nextState = .idle
             }
             if state == .playing { scheduleHide() }
+            if playIntent != nil {
+                playIntentReset?.cancel()
+                withAnimation(.snappy(duration: 0.22)) { playIntent = nil }
+            }
         }
     }
 
@@ -432,6 +440,29 @@ struct PlayerView: View {
 
     private var isBusy: Bool { status.busy }
 
+    /// The play / pause icon: your tap first, then the engine.
+    private var showsPlaying: Bool { playIntent ?? (status.state == .playing) }
+
+    private func togglePlayback() {
+        let play = !showsPlaying
+        withAnimation(.snappy(duration: 0.22)) { playIntent = play }
+        if engine.needsForegroundVideoRestore {
+            Task { await restoreAfterBackground(play: true) }
+        } else if play {
+            engine.play()
+        } else {
+            engine.pause()
+        }
+        // The engine normally answers within a beat; if it doesn't, show what it is doing.
+        playIntentReset?.cancel()
+        playIntentReset = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.snappy(duration: 0.22)) { playIntent = nil }
+        }
+        interacted()
+    }
+
     private var centerTransport: some View {
         HStack(spacing: 70) {
             Button { skip(-skipSeconds, flash: false) } label: {
@@ -440,22 +471,19 @@ struct PlayerView: View {
                     .frame(width: 64, height: 64)
                     .contentShape(Circle())
             }
-            Button {
-                if engine.needsForegroundVideoRestore {
-                    Task { await restoreAfterBackground(play: true) }
-                } else {
-                    engine.togglePlayPause()
-                }
-                interacted()
-            } label: {
-                Image(systemName: status.state == .playing ? "pause.fill" : "play.fill")
+            Button(action: togglePlayback) {
+                Image(systemName: showsPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 54, weight: .regular))
                     .frame(width: 84, height: 84)
                     .contentShape(Circle())
-                    .contentTransition(.symbolEffect(.replace))
+                    .contentTransition(.symbolEffect(.replace.downUp, options: .speed(1.5)))
                     // The buffering spinner takes this spot while it shows.
-                    .opacity(isBusy ? 0 : 1)
+                    .opacity(isBusy && playIntent == nil ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.18), value: isBusy)
             }
+            .buttonStyle(PressScaleButtonStyle(scale: 0.86))
+            .sensoryFeedback(.impact(weight: .light), trigger: playIntent) { _, new in new != nil }
+            .accessibilityLabel(showsPlaying ? "Pause" : "Play")
             Button { skip(skipSeconds, flash: false) } label: {
                 Image(systemName: skipSymbol(back: false))
                     .font(.system(size: 34, weight: .regular))
