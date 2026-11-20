@@ -506,7 +506,8 @@ struct PlayerView: View {
                     moreMenu
                 }
             }
-            ScrubBar(engine: engine, clock: engine.clock, stills: stills, url: item.url, scrubbing: $scrubbing,
+            ScrubBar(engine: engine, clock: engine.clock, stills: stills, url: item.url, headers: item.headers,
+                     scrubbing: $scrubbing,
                      showRemaining: $showRemaining) { scheduleHide() }
         }
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(SubtitleOverlay.space)).minY } action: { bottomTop = $0 }
@@ -1136,22 +1137,26 @@ struct ScrubBar: View {
     @ObservedObject var engine: AetherEngine
     @ObservedObject var clock: PlaybackClock
     let stills: ScrubStillSource
-    /// The stream playing, so its pictures come from the right file.
+    /// The stream playing and its request headers, so its pictures come from the right file.
     let url: URL
+    let headers: [String: String]
     @Binding var scrubbing: Bool
     @Binding var showRemaining: Bool
     let onInteraction: () -> Void
 
     @State private var dragTime: Double?
+    /// The picture in the preview: the one for the finger's spot, or the closest one fetched so far.
     @State private var thumbnail: CGImage?
-    @State private var thumbnailTask: Task<Void, Never>?
-    /// A picture is on its way and none is shown yet: a frame stands in for it.
-    @State private var stillPending = false
+    /// Fetches pictures one at a time while scrubbing (see `runStills`).
+    @State private var stillWorker: Task<Void, Never>?
     /// True only while a finger is down; resets itself if the system cancels the drag.
     @GestureState private var dragging = false
 
     private var duration: Double { max(engine.duration, 0.1) }
     private var shownTime: Double { dragTime ?? clock.currentTime }
+
+    private static let previewWidth: CGFloat = 208
+    private static let previewHeight: CGFloat = 117
 
     var body: some View {
         VStack(spacing: 8) {
@@ -1177,14 +1182,9 @@ struct ScrubBar: View {
                         .onChanged { value in
                             guard engine.duration > 0 else { return }
                             let f = min(max(value.location.x / width, 0), 1)
-                            let time = f * duration
-                            if !scrubbing {
-                                scrubbing = true
-                                let stills = stills, engine = engine, url = url
-                                Task { await stills.prewarm(engine, url: url) }
-                            }
-                            dragTime = time
-                            requestThumbnail(time)
+                            dragTime = f * duration
+                            if !scrubbing { scrubbing = true }
+                            startStills()
                         }
                         .onEnded { _ in
                             if let target = dragTime {
@@ -1209,8 +1209,9 @@ struct ScrubBar: View {
                 }
                 .overlay(alignment: .bottomLeading) {
                     if scrubbing, let dragTime {
+                        let half = Self.previewWidth / 2
                         preview(time: dragTime)
-                            .offset(x: min(max(width * fraction - 100, 0), max(width - 200, 0)), y: -44)
+                            .offset(x: min(max(width * fraction - half, 0), max(width - Self.previewWidth, 0)), y: -44)
                             .allowsHitTesting(false)
                     }
                 }
@@ -1230,100 +1231,174 @@ struct ScrubBar: View {
             .font(.caption.weight(.semibold).monospacedDigit())
             .foregroundStyle(.white.opacity(0.8))
         }
+        .onDisappear {
+            stillWorker?.cancel()
+            stillWorker = nil
+        }
     }
 
     private func endScrub() {
         scrubbing = false
-        thumbnailTask?.cancel()
+        stillWorker?.cancel()
+        stillWorker = nil
         thumbnail = nil
-        stillPending = false
         let engine = engine
         Task { await engine.releaseScrubPreviewDecoders() }
         onInteraction()
     }
 
+    /// One fixed-size frame for the whole scrub: the picture letterboxed inside it, a spinner only
+    /// until the very first picture arrives. It never resizes or disappears while the finger moves.
     private func preview(time: Double) -> some View {
         VStack(spacing: 6) {
-            if let thumbnail {
-                Image(decorative: thumbnail, scale: 1)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.6), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.5), radius: 10)
-            } else if stillPending {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(.black.opacity(0.55))
-                    .frame(width: 200, height: 112)
-                    .overlay { ProgressView().tint(.white) }
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.35), lineWidth: 1))
+            ZStack {
+                Color.black
+                if let thumbnail {
+                    Image(decorative: thumbnail, scale: 1)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    ProgressView().tint(.white)
+                }
             }
+            .frame(width: Self.previewWidth, height: Self.previewHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.6), lineWidth: 1))
+            .shadow(color: .black.opacity(0.5), radius: 10)
             Text(formatTime(time))
                 .font(.caption.monospacedDigit().weight(.bold))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
                 .glass(Capsule())
         }
-        .frame(width: 200)
+        .frame(width: Self.previewWidth)
     }
 
-    private func requestThumbnail(_ time: Double) {
-        thumbnailTask?.cancel()
-        if thumbnail == nil { stillPending = true }
-        thumbnailTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 60_000_000)
+    private func startStills() {
+        guard stillWorker == nil else { return }
+        stillWorker = Task { @MainActor in await runStills() }
+    }
+
+    /// While the finger is down: show the closest picture already fetched at once, fetch the one
+    /// for the finger's spot, and while the finger rests, fill in the spots around it. One fetch
+    /// runs at a time and is never abandoned for a newer position (abandoning them is why no
+    /// picture ever arrived before); when it lands, the newest position is next.
+    private func runStills() async {
+        let stills = stills, engine = engine, url = url, headers = headers
+        var failures = 0
+        while !Task.isCancelled {
+            guard let target = dragTime, engine.duration > 0 else {
+                try? await Task.sleep(nanoseconds: 40_000_000)
+                continue
+            }
+            let length = engine.duration
+            let cell = ScrubStillSource.cell(target, duration: length)
+            if let shown = stills.picture(at: cell) ?? stills.nearest(to: cell, reach: 3), shown !== thumbnail {
+                thumbnail = shown
+            }
+            let next = stills.wants(cell) ? cell : stills.neighbourToFill(around: cell)
+            guard let next else {
+                try? await Task.sleep(nanoseconds: 40_000_000)
+                continue
+            }
+            let at = next == cell ? target : ScrubStillSource.centre(of: next, duration: length)
+            let image = await stills.fetch(engine, url: url, headers: headers, cell: next, at: at)
             guard !Task.isCancelled else { return }
-            let image = await stills.still(engine, url: url, at: time)
-            guard !Task.isCancelled else { return }
-            if let image { thumbnail = image }
-            stillPending = false
+            if image == nil {
+                failures += 1
+                // A source that won't give pictures: stop asking it so often.
+                if failures >= 3 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            } else {
+                failures = 0
+            }
         }
     }
 }
 
-/// Where scrub pictures come from. First the engine's own, decoded from video it has already
-/// downloaded (instant, no network). Positions it hasn't downloaded are read from the stream by a
-/// frame reader on a second connection; it holds back while playback is short of data, so it
-/// never starves the picture you're watching. Sources that refuse a second connection just show
-/// the time, as before.
+/// Where scrub pictures come from, and the ones already fetched for the item playing. The timeline
+/// is cut into `cells` spots that each keep one picture, so moving back over a stretch shows its
+/// pictures at once, and a second scrub starts with what the first one found.
+///
+/// A picture comes from the engine when that part of the video is already downloaded (instant, no
+/// network), else from a frame reader with its own connection to the stream. Sources that refuse
+/// a second connection only show the time.
 @MainActor
 final class ScrubStillSource {
+    static let cells = 100
+
     private var extractor: FrameExtractor?
-    private var extractorURL: URL?
+    private var itemURL: URL?
+    private var pictures: [Int: CGImage] = [:]
+    /// Spots that just failed, not asked again for a few seconds.
+    private var failedAt: [Int: Date] = [:]
 
-    func still(_ engine: AetherEngine, url: URL, at seconds: Double) async -> CGImage? {
-        if engine.supportsCacheBackedStills,
-           let image = await engine.scrubThumbnail(atSeconds: seconds, maxWidth: 400) {
-            return image
+    /// The spot a time falls in (the end of the timeline is the last spot).
+    nonisolated static func cell(_ seconds: Double, duration: Double) -> Int {
+        guard duration > 0, seconds.isFinite else { return 0 }
+        return min(max(Int(seconds / duration * Double(cells)), 0), cells - 1)
+    }
+
+    /// The middle of a spot, where a filled-in picture is taken.
+    nonisolated static func centre(of cell: Int, duration: Double) -> Double {
+        (Double(cell) + 0.5) / Double(cells) * duration
+    }
+
+    func picture(at cell: Int) -> CGImage? { pictures[cell] }
+
+    /// The closest picture already fetched, at most `reach` spots away.
+    func nearest(to cell: Int, reach: Int) -> CGImage? {
+        for distance in 1...max(reach, 1) {
+            if let found = pictures[cell - distance] ?? pictures[cell + distance] { return found }
         }
-        guard !Task.isCancelled, let extractor = await reader(engine, url: url) else { return nil }
-        // shortcut: asks at the playback position, which is the file's own time for nearly every
-        // file; one whose first frame isn't at 0 shows a picture that far off.
-        return await extractor.thumbnail(at: seconds, maxWidth: 400)
+        return nil
     }
 
-    /// Opens the reader as a scrub starts, so the first picture comes sooner.
-    func prewarm(_ engine: AetherEngine, url: URL) async {
-        await reader(engine, url: url)?.prewarm()
+    /// Whether a spot still needs its picture.
+    func wants(_ cell: Int) -> Bool {
+        guard cell >= 0, cell < Self.cells, pictures[cell] == nil else { return false }
+        if let failed = failedAt[cell], Date().timeIntervalSince(failed) < 5 { return false }
+        return true
     }
 
-    /// Closes the reader (the player is closing).
+    /// The nearest spot around `cell` (up to five each way) still without a picture.
+    func neighbourToFill(around cell: Int) -> Int? {
+        for distance in 1...5 {
+            for candidate in [cell + distance, cell - distance] where wants(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    /// Fetches the picture at `seconds` for `cell` and keeps it.
+    func fetch(_ engine: AetherEngine, url: URL, headers: [String: String], cell: Int, at seconds: Double) async -> CGImage? {
+        if itemURL != url { await reset(); itemURL = url }
+        var image: CGImage?
+        if engine.supportsCacheBackedStills {
+            image = await engine.scrubThumbnail(atSeconds: seconds, maxWidth: 320)
+        }
+        if image == nil, !Task.isCancelled {
+            if extractor == nil { extractor = FrameExtractor(url: url, httpHeaders: headers) }
+            // shortcut: asks at the playback position, which is the file's own time for nearly every
+            // file; one whose first frame isn't at 0 shows a picture that far off.
+            image = await extractor?.thumbnail(at: seconds, maxWidth: 320)
+        }
+        guard itemURL == url else { return nil }   // the episode changed meanwhile
+        if let image {
+            pictures[cell] = image
+            failedAt[cell] = nil
+        } else if !Task.isCancelled {
+            failedAt[cell] = Date()
+        }
+        return image
+    }
+
+    /// Forgets the pictures and closes the reader (another episode, or the player closing).
     func reset() async {
+        pictures = [:]
+        failedAt = [:]
+        itemURL = nil
         let old = extractor
         extractor = nil
-        extractorURL = nil
         await old?.shutdown()
-    }
-
-    private func reader(_ engine: AetherEngine, url: URL) async -> FrameExtractor? {
-        if extractorURL != url {
-            // Another episode: the old reader belongs to the old file.
-            await reset()
-            extractor = engine.makeFrameExtractor()
-            extractorURL = extractor == nil ? nil : url
-        }
-        return extractor
     }
 }
 

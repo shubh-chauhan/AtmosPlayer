@@ -379,6 +379,14 @@ enum SelfCheck {
         let back = SpotlightIndex.ref(SpotlightIndex.identifier(titled))
         expect(back?.id == "tt9" && back?.type == "movie" && back?.name == "A | B", "Spotlight id round-trip")
 
+        // Scrub picture spots: the whole timeline maps onto 0..<cells, the end onto the last one.
+        let spots = ScrubStillSource.cells
+        expect(ScrubStillSource.cell(0, duration: 100) == 0 && ScrubStillSource.cell(100, duration: 100) == spots - 1
+               && ScrubStillSource.cell(-5, duration: 100) == 0 && ScrubStillSource.cell(50, duration: 0) == 0,
+               "scrub spots stay in range")
+        expect(ScrubStillSource.cell(ScrubStillSource.centre(of: 37, duration: 5400), duration: 5400) == 37,
+               "a spot's centre falls in that spot")
+
         // Images older than a month are fetched again.
         func response(daysAgo: Double) -> URLResponse {
             let formatter = DateFormatter()
