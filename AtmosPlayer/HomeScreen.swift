@@ -602,7 +602,8 @@ struct HeroCarousel: View {
         .task(id: activeId) {
             guard let index = items.firstIndex(where: { $0.id == activeId }), items.count > 1 else { return }
             for neighbour in [items[(index + 1) % items.count], items[(index + items.count - 1) % items.count]] {
-                await ImagePipeline.shared.prefetch(neighbour.background ?? neighbour.poster, maxPixel: 1800)
+                _ = await MetaResolver.heroArt(for: MetaRef(neighbour), portrait: !wide,
+                                               fallback: neighbour.background ?? neighbour.poster, maxPixel: 1800)
             }
         }
         // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
@@ -679,8 +680,9 @@ struct HeroCard: View {
     var stretch: CGFloat = 0
     var onTrailer: (Bool) -> Void = { _ in }
     let onOpen: () -> Void
-    /// TMDB's backdrop without printed text, so the title logo is the only lettering on the card.
-    @State private var textless: String?
+    /// Set once the card's picture is decided (TMDB's text-free art, or the backdrop), so it
+    /// appears once instead of being swapped a moment later.
+    @State private var ready = false
     @EnvironmentObject private var favorites: FavoritesStore
     @Environment(\.verticalSizeClass) private var verticalSize
     /// Landscape iPhone: little height, so a smaller logo and shorter synopsis.
@@ -694,7 +696,9 @@ struct HeroCard: View {
                 // A slow push-in on the page you're looking at.
                 Color.clear
                     .overlay {
-                        RemoteImage(url: textless ?? item.background ?? item.poster, maxPixel: 1800, placeholderSymbol: "")
+                        RemoteImage(url: MetaResolver.decidedHeroArt(MetaRef(item), portrait: !wide)
+                                        ?? (ready ? item.background ?? item.poster : nil),
+                                    maxPixel: 1800, placeholderSymbol: "")
                             .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
                             .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
                     }
@@ -742,12 +746,9 @@ struct HeroCard: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
         .task(id: "\(item.id)/\(wide)") {
-            guard TMDB.isConfigured, item.id.hasPrefix("tt"),
-                  let art = await MetaResolver.extras(for: MetaRef(item))?.heroArt(portrait: !wide) else { return }
-            // Only once it's decoded, so the card never flashes empty.
-            if let url = ArtworkURL.best(art, maxPixel: 1800) { _ = await ImagePipeline.shared.image(url, maxPixel: 1800) }
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 0.4)) { textless = art }
+            _ = await MetaResolver.heroArt(for: MetaRef(item), portrait: !wide,
+                                           fallback: item.background ?? item.poster, maxPixel: 1800)
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { ready = true } }
         }
     }
 

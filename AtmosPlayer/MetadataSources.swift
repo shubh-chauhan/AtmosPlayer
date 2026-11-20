@@ -424,6 +424,61 @@ enum MetaResolver {
         return extras
     }
 
+    /// Hero pictures already decided this session, by title and frame shape.
+    private static var heroMemo: [String: String] = [:]
+
+    /// The hero picture decided for a title, if it has been: shown in the first frame.
+    static func decidedHeroArt(_ ref: MetaRef, portrait: Bool) -> String? {
+        heroMemo["\(key(ref))/\(portrait)"]
+    }
+
+    /// Decides a title's hero picture once and decodes it before returning, so a page shows
+    /// one picture instead of a stand-in swapped a moment later. TMDB's text-free art when it's
+    /// saved or arrives within `wait` seconds, else `fallback`.
+    static func heroArt(for ref: MetaRef, portrait: Bool, fallback: String?, maxPixel: Int,
+                        wait: Double = 2.5) async -> String? {
+        let memoKey = "\(key(ref))/\(portrait)"
+        if let decided = heroMemo[memoKey] { return decided }
+        var art: String?
+        var final = true
+        if TMDB.isConfigured, ref.id.hasPrefix("tt") {
+            let key = key(ref)
+            let saved: MetaExtras?
+            if let fromEntry = await MetaCache.entry(key)?.extras {
+                saved = fromEntry
+            } else {
+                saved = await MetaCache.savedExtras(key)
+            }
+            if let saved, saved.tmdbId != nil, saved.version == MetaExtras.currentVersion {
+                art = saved.heroArt(portrait: portrait)
+            } else {
+                // Whichever comes first: TMDB's answer or the wait running out.
+                let first: (fetched: Bool, art: String?) = await withTaskGroup(of: (Bool, String?).self) { group in
+                    group.addTask { @MainActor in (true, await extras(for: ref)?.heroArt(portrait: portrait)) }
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(wait))
+                        return (false, nil)
+                    }
+                    let answer = await group.next() ?? (false, nil)
+                    group.cancelAll()
+                    return answer
+                }
+                art = first.art
+                // Ran out of time: not remembered, so the next visit can still get TMDB's art.
+                final = first.fetched
+            }
+        }
+        var chosen = fallback
+        if let art, let url = ArtworkURL.best(art, maxPixel: maxPixel),
+           await ImagePipeline.shared.image(url, maxPixel: maxPixel) != nil {
+            chosen = art
+        } else {
+            await ImagePipeline.shared.prefetch(fallback, maxPixel: maxPixel)
+        }
+        if final, let chosen { heroMemo[memoKey] = chosen }
+        return chosen
+    }
+
     private static func loadExtras(_ ref: MetaRef) {
         guard TMDB.isConfigured, ref.id.hasPrefix("tt") else { return }
         Task { _ = await extras(for: ref) }

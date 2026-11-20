@@ -27,6 +27,8 @@ struct MetaDetailView: View {
     @State private var similar: [MetaPreview] = []
     /// TMDB's extra details (photos, roles, companies, textless art, where it streams).
     @State private var extras: MetaExtras?
+    /// Set once the hero picture is decided (and decoded), so it appears once, not swapped.
+    @State private var heroReady = false
     /// The navigation bar fades in once the backdrop has scrolled away.
     @State private var showBar = false
     /// Trailer preview behind the title: shown, sound on, and whether this page is on top.
@@ -211,6 +213,11 @@ struct MetaDetailView: View {
         .task(id: meta?.id) {
             if let meta, similar.isEmpty { similar = await SimilarTitles.find(for: meta) }
         }
+        .task(id: wide) {
+            _ = await MetaResolver.heroArt(for: ref, portrait: !wide, fallback: background,
+                                           maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800)
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.25)) { heroReady = true } }
+        }
         .task {
             let found = await MetaResolver.extras(for: ref)
             if !Task.isCancelled, found != extras { withAnimation(.easeOut(duration: 0.3)) { extras = found } }
@@ -241,7 +248,8 @@ struct MetaDetailView: View {
                 // The size Home's big card decodes at on iPhone, so opening a title from it shows the same picture at once.
                 // TMDB's text-free art when there is one: no printed title behind the logo, and
                 // on a phone a portrait poster, so the tall frame isn't a crop of a wide picture.
-                RemoteImage(url: extras?.heroArt(portrait: !wide) ?? background,
+                // Nothing until it's decided, so the page never shows a stand-in first.
+                RemoteImage(url: MetaResolver.decidedHeroArt(ref, portrait: !wide) ?? (heroReady ? background : nil),
                             maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800,
                             placeholderSymbol: "")
                     .frame(width: geo.size.width, height: height + stretch)
