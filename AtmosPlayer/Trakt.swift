@@ -406,11 +406,11 @@ final class TraktAccount: ObservableObject {
 }
 
 /// Rate a title on Trakt from its page: hearts 1…10, the way Trakt rates.
-struct TraktRatingMenu<Label: View>: View {
+struct TraktRatingMenu<RatingLabel: View>: View {
     let metaId: String
     let type: String
     /// Drawn with your current rating (nil when unrated).
-    @ViewBuilder let label: (Int?) -> Label
+    @ViewBuilder let label: (Int?) -> RatingLabel
     @ObservedObject private var trakt = TraktAccount.shared
 
     var body: some View {
