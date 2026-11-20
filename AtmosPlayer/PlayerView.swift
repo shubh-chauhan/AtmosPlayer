@@ -61,6 +61,11 @@ struct PlayerView: View {
     /// One quiet retry per item when a stream fails mid-playback (a dropped connection,
     /// a debrid link that expired), resuming where it stopped.
     @State private var retriedItemId: UUID?
+    /// Pictures for the timeline while scrubbing. Kept here, not in the timeline, which goes
+    /// away each time the controls hide.
+    @State private var stills = ScrubStillSource()
+    /// Whether it was playing when the app left the screen, to come back the same way.
+    @State private var playingWhenLeft = false
 
     enum NextState: Equatable {
         case idle
@@ -207,15 +212,21 @@ struct PlayerView: View {
             sleepTask?.cancel()
             torrent.stop()
             pip.stop()
+            let stills = stills
+            Task { await stills.reset() }
             PlaybackRemote.shared.detach()
             engine.stop()
             UIApplication.shared.isIdleTimerDisabled = false
             OrientationLock.set(AppDelegate.defaultMask)
             if item.securityScoped { item.url.stopAccessingSecurityScopedResource() }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { old, phase in
+            if old == .active { playingWhenLeft = status.state == .playing }
             // iOS may end the app while it's in the background; save first.
             if phase == .background { recordProgress(push: true) }
+            // Back from the background: rebuild the picture iOS made the engine release, paused
+            // or playing as it was left, so it shows at once and Play works.
+            if phase == .active { Task { await restoreAfterBackground(play: playingWhenLeft) } }
         }
         .onChange(of: status.state) { _, state in
             if case .error(let message) = state {
@@ -430,7 +441,11 @@ struct PlayerView: View {
                     .contentShape(Circle())
             }
             Button {
-                engine.togglePlayPause()
+                if engine.needsForegroundVideoRestore {
+                    Task { await restoreAfterBackground(play: true) }
+                } else {
+                    engine.togglePlayPause()
+                }
                 interacted()
             } label: {
                 Image(systemName: status.state == .playing ? "pause.fill" : "play.fill")
@@ -491,7 +506,7 @@ struct PlayerView: View {
                     moreMenu
                 }
             }
-            ScrubBar(engine: engine, clock: engine.clock, scrubbing: $scrubbing,
+            ScrubBar(engine: engine, clock: engine.clock, stills: stills, url: item.url, scrubbing: $scrubbing,
                      showRemaining: $showRemaining) { scheduleHide() }
         }
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(SubtitleOverlay.space)).minY } action: { bottomTop = $0 }
@@ -693,6 +708,22 @@ struct PlayerView: View {
         }
     }
 
+    /// After a while in the background the engine releases the video (it must not hold a decoder
+    /// across a suspension) and keeps the source, position and tracks; it has to be rebuilt
+    /// before it can play again. Without this, Play after an app switch sat on a spinner.
+    private func restoreAfterBackground(play: Bool) async {
+        guard engine.needsForegroundVideoRestore, loadError == nil else { return }
+        do {
+            try await engine.reloadAtCurrentPosition { $0.autoplay = play }
+        } catch is CancellationError {
+            // A newer load or a close took over.
+        } catch {
+            // Can't be rebuilt in place: open it again where it was.
+            recordProgress(push: false)
+            await load()
+        }
+    }
+
     /// Saves the position every 30 seconds while playing (locally only), so a crash or an
     /// app kill loses little.
     private func saveWhilePlaying() async {
@@ -868,7 +899,7 @@ struct BufferingIndicator: View {
 
     private var label: String? {
         switch engine.playbackPhase {
-        case .loading: return "Loading"
+        case .loading: return ""
         case .rebuffering: return "Buffering"
         case .seeking: return ""
         case .stalled(let reconnecting): return reconnecting ? "Reconnecting" : "Waiting for network"
@@ -878,16 +909,19 @@ struct BufferingIndicator: View {
 
     var body: some View {
         if let label {
-            VStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-                if !label.isEmpty {
-                    Text(label).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.85))
+            ProgressView()
+                .controlSize(.large)
+                .tint(.white)
+                // Hung below the spinner, so the spinner stays dead centre whether a word shows or not.
+                .overlay(alignment: .top) {
+                    if !label.isEmpty {
+                        Text(label).font(.footnote.weight(.medium)).foregroundStyle(.white.opacity(0.85))
+                            .fixedSize()
+                            .offset(y: 46)
+                    }
                 }
-            }
-            .shadow(color: .black.opacity(0.5), radius: 8)
-            .allowsHitTesting(false)
+                .shadow(color: .black.opacity(0.5), radius: 8)
+                .allowsHitTesting(false)
         }
     }
 }
@@ -1101,6 +1135,9 @@ struct UpNextCard: View {
 struct ScrubBar: View {
     @ObservedObject var engine: AetherEngine
     @ObservedObject var clock: PlaybackClock
+    let stills: ScrubStillSource
+    /// The stream playing, so its pictures come from the right file.
+    let url: URL
     @Binding var scrubbing: Bool
     @Binding var showRemaining: Bool
     let onInteraction: () -> Void
@@ -1108,6 +1145,8 @@ struct ScrubBar: View {
     @State private var dragTime: Double?
     @State private var thumbnail: CGImage?
     @State private var thumbnailTask: Task<Void, Never>?
+    /// A picture is on its way and none is shown yet: a frame stands in for it.
+    @State private var stillPending = false
     /// True only while a finger is down; resets itself if the system cancels the drag.
     @GestureState private var dragging = false
 
@@ -1139,7 +1178,11 @@ struct ScrubBar: View {
                             guard engine.duration > 0 else { return }
                             let f = min(max(value.location.x / width, 0), 1)
                             let time = f * duration
-                            if !scrubbing { scrubbing = true }
+                            if !scrubbing {
+                                scrubbing = true
+                                let stills = stills, engine = engine, url = url
+                                Task { await stills.prewarm(engine, url: url) }
+                            }
                             dragTime = time
                             requestThumbnail(time)
                         }
@@ -1193,6 +1236,9 @@ struct ScrubBar: View {
         scrubbing = false
         thumbnailTask?.cancel()
         thumbnail = nil
+        stillPending = false
+        let engine = engine
+        Task { await engine.releaseScrubPreviewDecoders() }
         onInteraction()
     }
 
@@ -1206,6 +1252,12 @@ struct ScrubBar: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.6), lineWidth: 1))
                     .shadow(color: .black.opacity(0.5), radius: 10)
+            } else if stillPending {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.black.opacity(0.55))
+                    .frame(width: 200, height: 112)
+                    .overlay { ProgressView().tint(.white) }
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.35), lineWidth: 1))
             }
             Text(formatTime(time))
                 .font(.caption.monospacedDigit().weight(.bold))
@@ -1217,14 +1269,61 @@ struct ScrubBar: View {
     }
 
     private func requestThumbnail(_ time: Double) {
-        guard engine.supportsCacheBackedStills else { return }
         thumbnailTask?.cancel()
+        if thumbnail == nil { stillPending = true }
         thumbnailTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 60_000_000)
             guard !Task.isCancelled else { return }
-            let image = await engine.scrubThumbnail(atSeconds: time, maxWidth: 400)
-            if !Task.isCancelled, let image { thumbnail = image }
+            let image = await stills.still(engine, url: url, at: time)
+            guard !Task.isCancelled else { return }
+            if let image { thumbnail = image }
+            stillPending = false
         }
+    }
+}
+
+/// Where scrub pictures come from. First the engine's own, decoded from video it has already
+/// downloaded (instant, no network). Positions it hasn't downloaded are read from the stream by a
+/// frame reader on a second connection; it holds back while playback is short of data, so it
+/// never starves the picture you're watching. Sources that refuse a second connection just show
+/// the time, as before.
+@MainActor
+final class ScrubStillSource {
+    private var extractor: FrameExtractor?
+    private var extractorURL: URL?
+
+    func still(_ engine: AetherEngine, url: URL, at seconds: Double) async -> CGImage? {
+        if engine.supportsCacheBackedStills,
+           let image = await engine.scrubThumbnail(atSeconds: seconds, maxWidth: 400) {
+            return image
+        }
+        guard !Task.isCancelled, let extractor = await reader(engine, url: url) else { return nil }
+        // shortcut: asks at the playback position, which is the file's own time for nearly every
+        // file; one whose first frame isn't at 0 shows a picture that far off.
+        return await extractor.thumbnail(at: seconds, maxWidth: 400)
+    }
+
+    /// Opens the reader as a scrub starts, so the first picture comes sooner.
+    func prewarm(_ engine: AetherEngine, url: URL) async {
+        await reader(engine, url: url)?.prewarm()
+    }
+
+    /// Closes the reader (the player is closing).
+    func reset() async {
+        let old = extractor
+        extractor = nil
+        extractorURL = nil
+        await old?.shutdown()
+    }
+
+    private func reader(_ engine: AetherEngine, url: URL) async -> FrameExtractor? {
+        if extractorURL != url {
+            // Another episode: the old reader belongs to the old file.
+            await reset()
+            extractor = engine.makeFrameExtractor()
+            extractorURL = extractor == nil ? nil : url
+        }
+        return extractor
     }
 }
 
