@@ -365,6 +365,11 @@ enum SelfCheck {
         expect(TraktAccount.historyBody(metaId: "kitsu:1", type: "movie", videoIds: [], at: nil) == nil, "Trakt only for IMDb ids")
         expect(TraktAccount.item(ref).flatMap { $0["episode"] as? [String: Int] } == ["season": 1, "number": 2], "scrobble body for an episode")
 
+        // PKCE: RFC 7636's own example.
+        expect(PKCE.challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+               "PKCE challenge")
+        expect(PKCE.verifier().count >= 43 && !PKCE.verifier().contains("="), "PKCE verifier length and alphabet")
+
         // Anime ids map through TMDB; other ids don't.
         expect(KitsuMap.kitsuNumber("kitsu:1376:5") == "1376" && KitsuMap.kitsuNumber("tt1") == nil, "Kitsu number")
         expect(MetaResolver.mappable("kitsu:1376") && MetaResolver.mappable("tt1") && !MetaResolver.mappable("tmdb:1"), "mappable ids")

@@ -1,22 +1,55 @@
 import Foundation
 import SwiftUI
+import AuthenticationServices
+import CryptoKit
 
 // MARK: - Trakt
 //
 // Optional: connect a Trakt account to send what you watch there (scrobbling), keep ✓ marks
 // in step with Trakt's history, rate titles, and get Trakt's recommendations on Home.
-// API: trakt.docs.apiary.io (v2). Sign-in uses Trakt's device code flow: the app shows a code,
-// you enter it at trakt.tv/activate; no password ever passes through the app. Tokens are kept
-// in the Keychain.
+// API: trakt.docs.apiary.io (v2). Sign-in happens on Trakt's own page (no password passes
+// through the app): with PKCE (what Trakt's current developer portal issues: a Client ID and no
+// secret), Trakt's sign-in page opens in a browser sheet and returns to atmosplayer://trakt;
+// apps that do have a secret use the device code flow instead (enter a code at trakt.tv/activate).
+// Tokens are kept in the Keychain.
 //
-// The app's client id and secret come from the TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET repo
-// secrets (a Trakt API app you register), scrambled into Info.plist like TMDB's token. Without
-// them Trakt stays off and Settings says how to turn it on.
+// The client id (and an optional secret) come from the TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET repo
+// secrets, scrambled into Info.plist like TMDB's token. Without an id Trakt stays off and
+// Settings says how to turn it on.
 
 enum TraktConfig {
     static let clientId: String? = TMDB.descramble(Bundle.main.object(forInfoDictionaryKey: "TraktClientID") as? String)
     static let clientSecret: String? = TMDB.descramble(Bundle.main.object(forInfoDictionaryKey: "TraktClientSecret") as? String)
-    static var isConfigured: Bool { clientId != nil && clientSecret != nil }
+    static var isConfigured: Bool { clientId != nil }
+    /// Set as the app's Redirect URI in Trakt's developer settings.
+    static let redirectURI = "atmosplayer://trakt"
+}
+
+/// PKCE (RFC 7636): a random verifier kept in the app, and its SHA-256 sent with the sign-in.
+enum PKCE {
+    static func verifier() -> String {
+        var bytes = [UInt8](repeating: 0, count: 48)
+        for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
+        return base64url(Data(bytes))
+    }
+
+    static func challenge(_ verifier: String) -> String {
+        base64url(Data(SHA256.hash(data: Data(verifier.utf8))))
+    }
+
+    static func base64url(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+/// Where the sign-in sheet is shown: the app's front window.
+private final class SignInAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first ?? ASPresentationAnchor()
+        }
+    }
 }
 
 @MainActor
@@ -65,11 +98,15 @@ final class TraktAccount: ObservableObject {
 
     // MARK: Connect
 
-    /// Starts the device code flow and waits (in the background) for you to approve it.
+    /// Signs in on Trakt's page: PKCE when the app has no secret, else the device code flow.
     func connect() {
         guard TraktConfig.isConfigured, let clientId = TraktConfig.clientId else { return }
         pairingTask?.cancel()
         lastError = nil
+        if TraktConfig.clientSecret == nil {
+            pairingTask = Task { await signInWithPKCE(clientId: clientId) }
+            return
+        }
         pairingTask = Task {
             guard let reply = try? await send("POST", "/oauth/device/code", body: ["client_id": clientId], auth: false),
                   reply.1 == 200,
@@ -85,6 +122,53 @@ final class TraktAccount: ObservableObject {
             pairing = Pairing(userCode: userCode, url: url, expires: Date().addingTimeInterval(lifetime))
             await poll(deviceCode: deviceCode, every: interval, until: Date().addingTimeInterval(lifetime))
         }
+    }
+
+    private var authSession: ASWebAuthenticationSession?
+    private let anchor = SignInAnchor()
+    @Published private(set) var signingIn = false
+
+    private func signInWithPKCE(clientId: String) async {
+        let verifier = PKCE.verifier()
+        let state = UUID().uuidString
+        var components = URLComponents(string: "https://trakt.tv/oauth/authorize")!
+        components.queryItems = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: clientId),
+            URLQueryItem(name: "redirect_uri", value: TraktConfig.redirectURI),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "code_challenge", value: PKCE.challenge(verifier)),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+        ]
+        guard let url = components.url else { return }
+        signingIn = true
+        defer { signingIn = false }
+        let callback: URL? = await withCheckedContinuation { continuation in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "atmosplayer") { url, _ in
+                continuation.resume(returning: url)
+            }
+            session.presentationContextProvider = anchor
+            authSession = session
+            if !session.start() { continuation.resume(returning: nil) }
+        }
+        authSession = nil
+        guard let callback else { return }   // closed by you
+        let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard items.first(where: { $0.name == "state" })?.value == state,
+              let code = items.first(where: { $0.name == "code" })?.value else {
+            lastError = items.first(where: { $0.name == "error" }) != nil
+                ? "Sign-in was cancelled on Trakt." : "Trakt didn't finish the sign-in. Try again."
+            return
+        }
+        let body = ["code": code, "client_id": clientId, "redirect_uri": TraktConfig.redirectURI,
+                    "grant_type": "authorization_code", "code_verifier": verifier]
+        guard let reply = try? await send("POST", "/oauth/token", body: body, auth: false),
+              reply.1 == 200, store(tokensFrom: reply.0) else {
+            lastError = "Couldn't finish signing in to Trakt. Check the app's Redirect URI is \(TraktConfig.redirectURI)."
+            return
+        }
+        await loadUsername()
+        await sync()
     }
 
     func cancelPairing() {
@@ -141,8 +225,10 @@ final class TraktAccount: ObservableObject {
     }
 
     func disconnect() {
-        if let access = tokens?.access, let clientId = TraktConfig.clientId, let secret = TraktConfig.clientSecret {
-            Task { _ = try? await send("POST", "/oauth/revoke", body: ["token": access, "client_id": clientId, "client_secret": secret], auth: false) }
+        if let access = tokens?.access, let clientId = TraktConfig.clientId {
+            var body = ["token": access, "client_id": clientId]
+            if let secret = TraktConfig.clientSecret { body["client_secret"] = secret }
+            Task { _ = try? await send("POST", "/oauth/revoke", body: body, auth: false) }
         }
         tokens = nil
         Keychain.delete(tokenKey)
@@ -196,10 +282,14 @@ final class TraktAccount: ObservableObject {
     }
 
     private func refreshTokens() async {
-        guard let refresh = tokens?.refresh, let clientId = TraktConfig.clientId,
-              let secret = TraktConfig.clientSecret else { return }
-        let body = ["refresh_token": refresh, "client_id": clientId, "client_secret": secret,
-                    "redirect_uri": "urn:ietf:wg:oauth:2.0:oob", "grant_type": "refresh_token"]
+        guard let refresh = tokens?.refresh, let clientId = TraktConfig.clientId else { return }
+        var body = ["refresh_token": refresh, "client_id": clientId, "grant_type": "refresh_token"]
+        if let secret = TraktConfig.clientSecret {
+            body["client_secret"] = secret
+            body["redirect_uri"] = "urn:ietf:wg:oauth:2.0:oob"
+        } else {
+            body["redirect_uri"] = TraktConfig.redirectURI
+        }
         guard let reply = try? await send("POST", "/oauth/token", body: body, auth: false) else { return }
         if reply.1 == 200 {
             store(tokensFrom: reply.0)

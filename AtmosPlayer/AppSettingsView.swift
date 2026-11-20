@@ -320,6 +320,11 @@ struct TraktSection: View {
                     if let url = URL(string: pairing.url) { openURL(url) }
                 }
                 Button("Cancel", role: .cancel) { trakt.cancelPairing() }
+            } else if trakt.signingIn {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Signing in on Trakt…").foregroundStyle(.secondary)
+                }
             } else {
                 Button("Connect Trakt") { trakt.connect() }
             }
@@ -331,7 +336,7 @@ struct TraktSection: View {
         } footer: {
             Text(TraktConfig.isConfigured
                  ? "Sends what you watch to Trakt, keeps ✓ marks in step with your Trakt history, lets you rate titles from their page, and adds Trakt's picks to Home."
-                 : "To use Trakt, create an API app at trakt.tv/oauth/applications (redirect URI: urn:ietf:wg:oauth:2.0:oob) and add its Client ID and Client Secret as the TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET repository secrets.")
+                 : "To use Trakt, create an app at developer.trakt.tv with the Redirect URI atmosplayer://trakt, and add its Client ID as the TRAKT_CLIENT_ID repository secret.")
         }
     }
 }
