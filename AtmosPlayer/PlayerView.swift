@@ -1185,6 +1185,13 @@ struct ScrubBar: View {
     @State private var dragTime: Double?
     /// The picture in the preview: the one for the finger's spot, or the closest one fetched so far.
     @State private var thumbnail: CGImage?
+    /// The exact frame for where the finger rested, sharper than the spot's quick picture.
+    @State private var exact: ExactStill?
+
+    struct ExactStill {
+        let seconds: Double
+        let image: CGImage
+    }
     /// Fetches pictures one at a time while scrubbing (see `runStills`).
     @State private var stillWorker: Task<Void, Never>?
     /// True only while a finger is down; resets itself if the system cancels the drag.
@@ -1193,8 +1200,8 @@ struct ScrubBar: View {
     private var duration: Double { max(engine.duration, 0.1) }
     private var shownTime: Double { dragTime ?? clock.currentTime }
 
-    private static let previewWidth: CGFloat = 208
-    private static let previewHeight: CGFloat = 117
+    private static let previewWidth: CGFloat = 240
+    private static let previewHeight: CGFloat = 135
 
     var body: some View {
         VStack(spacing: 8) {
@@ -1251,8 +1258,11 @@ struct ScrubBar: View {
                         preview(time: dragTime)
                             .offset(x: min(max(width * fraction - half, 0), max(width - Self.previewWidth, 0)), y: -44)
                             .allowsHitTesting(false)
+                            // Rises out of the bar as the scrub starts, sinks back as it ends.
+                            .transition(.opacity.combined(with: .scale(scale: 0.88, anchor: .bottom)))
                     }
                 }
+                .animation(.spring(response: 0.3, dampingFraction: 0.82), value: scrubbing)
             }
             .frame(height: 30)
 
@@ -1280,6 +1290,7 @@ struct ScrubBar: View {
         stillWorker?.cancel()
         stillWorker = nil
         thumbnail = nil
+        exact = nil
         let engine = engine
         Task { await engine.releaseScrubPreviewDecoders() }
         onInteraction()
@@ -1295,21 +1306,43 @@ struct ScrubBar: View {
                     Image(decorative: thumbnail, scale: 1)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                        // Each new picture dissolves over the last instead of snapping.
+                        .id(ObjectIdentifier(thumbnail))
+                        .transition(.opacity)
                 } else {
                     ProgressView().tint(.white)
                 }
             }
+            .animation(.easeOut(duration: 0.16), value: thumbnail.map { ObjectIdentifier($0) })
             .frame(width: Self.previewWidth, height: Self.previewHeight)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.6), lineWidth: 1))
             .shadow(color: .black.opacity(0.5), radius: 10)
-            Text(formatTime(time))
-                .font(.caption.monospacedDigit().weight(.bold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .glass(Capsule())
+            VStack(spacing: 1) {
+                Text(formatTime(time))
+                    .font(.caption.monospacedDigit().weight(.bold))
+                if let chapter = chapterName(at: time) {
+                    Text(chapter)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .glass(Capsule())
+            .frame(maxWidth: Self.previewWidth)
         }
         .frame(width: Self.previewWidth)
+    }
+
+    /// The chapter a time falls in, when the file names its chapters ("Chapter 3" says nothing).
+    private func chapterName(at time: Double) -> String? {
+        guard let chapter = engine.mediaChapters.last(where: { $0.startSeconds <= time }) else { return nil }
+        let name = chapter.name.trimmingCharacters(in: .whitespaces)
+        let generic = name.isEmpty || name.allSatisfy(\.isNumber)
+            || name.range(of: "^(chapter|chapitre|kapitel|capitulo|capítulo)\\s*\\d+$", options: [.regularExpression, .caseInsensitive]) != nil
+        return generic ? nil : name
     }
 
     private func startStills() {
@@ -1324,15 +1357,40 @@ struct ScrubBar: View {
     private func runStills() async {
         let stills = stills, engine = engine, url = url, headers = headers
         var failures = 0
+        var lastTarget = -1.0
+        var restingSince = Date()
+        var exactTried = -1.0
         while !Task.isCancelled {
             guard let target = dragTime, engine.duration > 0 else {
                 try? await Task.sleep(nanoseconds: 40_000_000)
                 continue
             }
+            if abs(target - lastTarget) > 0.05 {
+                lastTarget = target
+                restingSince = Date()
+            }
             let length = engine.duration
             let cell = ScrubStillSource.cell(target, duration: length)
-            if let shown = stills.picture(at: cell) ?? stills.nearest(to: cell, reach: 3), shown !== thumbnail {
-                thumbnail = shown
+            // The exact frame while the finger is still on it, else the spot's quick picture.
+            let shown: CGImage?
+            if let exact, abs(exact.seconds - target) < 0.75 {
+                shown = exact.image
+            } else {
+                shown = stills.picture(at: cell) ?? stills.nearest(to: cell, reach: 3)
+            }
+            if let shown, shown !== thumbnail { thumbnail = shown }
+
+            // 1. The finger's spot. 2. Resting a moment: its exact frame. 3. Fill in around it.
+            if stills.wants(cell) {
+                // falls through to the fetch below
+            } else if Date().timeIntervalSince(restingSince) > 0.22, abs(exactTried - target) > 0.05 {
+                exactTried = target
+                if let image = await stills.exactFrame(engine, url: url, headers: headers, at: target) {
+                    guard !Task.isCancelled else { return }
+                    exact = ExactStill(seconds: target, image: image)
+                    if let now = dragTime, abs(now - target) < 0.75 { thumbnail = image }
+                }
+                continue
             }
             let next = stills.wants(cell) ? cell : stills.neighbourToFill(around: cell)
             guard let next else {
@@ -1398,9 +1456,9 @@ final class ScrubStillSource {
         return true
     }
 
-    /// The nearest spot around `cell` (up to five each way) still without a picture.
+    /// The nearest spot around `cell` (up to twelve each way) still without a picture.
     func neighbourToFill(around cell: Int) -> Int? {
-        for distance in 1...5 {
+        for distance in 1...12 {
             for candidate in [cell + distance, cell - distance] where wants(candidate) { return candidate }
         }
         return nil
@@ -1427,6 +1485,15 @@ final class ScrubStillSource {
             failedAt[cell] = Date()
         }
         return image
+    }
+
+    /// The frame at exactly `seconds` (not the keyframe before it), sharper, for a resting finger.
+    /// Nil where the stream won't give a second connection.
+    func exactFrame(_ engine: AetherEngine, url: URL, headers: [String: String], at seconds: Double) async -> CGImage? {
+        if itemURL != url { await reset(); itemURL = url }
+        if extractor == nil { extractor = FrameExtractor(url: url, httpHeaders: headers) }
+        let image = await extractor?.preview(at: seconds, maxWidth: 720)
+        return itemURL == url ? image : nil
     }
 
     /// Forgets the pictures and closes the reader (another episode, or the player closing).
