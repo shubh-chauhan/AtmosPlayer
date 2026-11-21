@@ -573,14 +573,10 @@ struct HeroCarousel: View {
                                      else if trailerPage == item.id { trailerPage = nil }
                                  }) { onOpen(item) }
                             .frame(width: geo.size.width, height: geo.size.height)
-                            // Apple TV's hero: pages don't slide past, they dissolve into each other
-                            // in place. Each page holds still against the scroll (drifting just a
-                            // little with the finger) and fades by how far it is from the middle, so
-                            // a swipe or the auto-advance is a cross-dissolve with paging's own feel.
-                            .scrollTransition(.interactive, axis: .horizontal) { [width = geo.size.width] view, phase in
-                                view
-                                    .opacity(1 - min(abs(phase.value), 1))
-                                    .offset(x: -phase.value * width * 0.88)
+                            // Pages slide with the finger (paging's own motion); the one leaving
+                            // dims a little. A dissolve in place was tried and read as ghosting.
+                            .scrollTransition(.interactive, axis: .horizontal) { view, phase in
+                                view.opacity(phase.isIdentity ? 1 : 0.55)
                             }
                             .id(item.id)
                     }
@@ -655,7 +651,7 @@ struct HeroCarousel: View {
             try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
             let index = items.firstIndex { $0.id == activeId } ?? 0
-            withAnimation(.easeInOut(duration: 0.9)) { current = items[(index + 1) % items.count].id }
+            withAnimation(.smooth(duration: 0.85)) { current = items[(index + 1) % items.count].id }
         }
     }
 
