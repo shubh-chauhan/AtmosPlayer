@@ -26,29 +26,11 @@ final class PlaybackRemote {
             .sink { [weak self] _ in self?.refresh() }
             .store(in: &cancellables)
 
+        // No Live Activity any more (it sat in the Dynamic Island the whole time something
+        // played); end any an older build left behind.
         Task {
-            // One activity at a time: end any left from an earlier session (or a crash).
-            for old in Activity<PlaybackAttributes>.activities where old.id != activity?.id {
+            for old in Activity<PlaybackAttributes>.activities {
                 await old.end(nil, dismissalPolicy: .immediate)
-            }
-            if let activity, activity.attributes.title == title, activity.attributes.subtitle == subtitle {
-                refresh()
-                return
-            }
-            if let activity { await activity.end(nil, dismissalPolicy: .immediate) }
-            activity = nil
-            guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-            let attributes = PlaybackAttributes(title: title, subtitle: subtitle)
-            activity = try? Activity.request(attributes: attributes,
-                                             content: ActivityContent(state: currentState(), staleDate: nil))
-        }
-
-        // Keep the position honest after seeks made in the app.
-        ticker?.cancel()
-        ticker = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
-                self?.refresh()
             }
         }
     }

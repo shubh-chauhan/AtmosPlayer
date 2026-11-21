@@ -43,6 +43,85 @@ final class DeviceLevels {
     }
 }
 
+/// The screen brightness around the player. Opening the player remembers the phone's level; a
+/// level you swipe to in the player applies only while the player is on screen. Closing the
+/// player, switching apps, locking the phone or pulling down Control Center glides back to the
+/// phone's level, and coming back glides to the player's again. If the level was changed while
+/// away (Control Center, Settings), that becomes the one to return to.
+@MainActor
+final class PlayerBrightness {
+    static let shared = PlayerBrightness()
+
+    /// The phone's own level, to go back to.
+    private var phone: Double?
+    /// The level swiped to in the player (nil until you swipe).
+    private var player: Double?
+    /// What this put the screen at last, to tell a change made elsewhere from one made here.
+    private var lastSet: Double?
+    private var glide: Task<Void, Never>?
+
+    /// The player opened.
+    func enter() {
+        phone = DeviceLevels.shared.brightness
+        player = nil
+        lastSet = nil
+    }
+
+    /// A brightness swipe in the player (it already set the screen).
+    func swiped(to level: Double) {
+        glide?.cancel()
+        player = level
+        lastSet = level
+    }
+
+    /// The app is leaving the screen (or Control Center is coming down): the phone's level.
+    func resign() {
+        guard player != nil, let phone else { return }
+        // Straight away: there's no time for a glide once the app has gone.
+        glide?.cancel()
+        DeviceLevels.shared.brightness = phone
+        lastSet = phone
+    }
+
+    /// Back on screen with the player up: the player's level again.
+    func resume() {
+        guard phone != nil else { return }
+        let now = DeviceLevels.shared.brightness
+        // Changed while away: that's the phone's level now.
+        if let lastSet, abs(now - lastSet) > 0.02 { phone = now }
+        if let player { set(player) }
+    }
+
+    /// The player closed: back to the phone's level, gently.
+    func leave() {
+        defer {
+            phone = nil
+            player = nil
+            lastSet = nil
+        }
+        guard player != nil, let phone else { return }
+        set(phone)
+    }
+
+    /// Moves the screen to `target` over a fraction of a second instead of jumping.
+    private func set(_ target: Double) {
+        glide?.cancel()
+        lastSet = target
+        let start = DeviceLevels.shared.brightness
+        guard abs(start - target) > 0.01 else { return }
+        glide = Task { @MainActor in
+            let steps = 14
+            for step in 1...steps {
+                guard !Task.isCancelled else { return }
+                let t = Double(step) / Double(steps)
+                let eased = t * t * (3 - 2 * t)
+                DeviceLevels.shared.brightness = start + (target - start) * eased
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+    }
+}
+
 /// A volume view that is in the window (so the system volume overlay stays away) but can never
 /// be seen: it sits outside a 1-point container that clips it, and the container itself is
 /// placed off screen. On iOS 26 the slider's handle is a glass capsule that ignores a low alpha,

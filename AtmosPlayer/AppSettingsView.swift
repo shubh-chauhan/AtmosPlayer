@@ -99,7 +99,7 @@ struct AppSettingsView: View {
     @AppStorage(Prefs.subtitleBold) private var subtitleBold = true
     @AppStorage(Prefs.subtitleLift) private var subtitleLift = 0.0
     @AppStorage(StreamFilterStore.key) private var savedFilters = ""
-    @AppStorage(QuickPlay.autoPickKey) private var autoPickBest = true
+    @AppStorage(QuickPlay.autoPickKey) private var autoPickBest = false
 
     @State private var cacheCleared = false
     @State private var confirmClearWatch = false
@@ -198,7 +198,7 @@ struct AppSettingsView: View {
                 } header: {
                     Text("Streams")
                 } footer: {
-                    Text("With the best stream on, Play starts the highest quality stream your addons have (resolution, then Dolby Vision or HDR, then Atmos), within your stream filters, when there's no stream from last time. Touch and hold Play to choose one yourself.\n\nFilter by quality, HDR, audio, codec and source from the chips on the stream list. Your selection is remembered.")
+                    Text("The first time you play a title you choose its stream; after that Play starts the one you chose. With the best stream on, Play instead starts the highest quality stream your addons have (resolution, then Dolby Vision or HDR, then Atmos) within your stream filters. Touch and hold Play to choose one any time.\n\nFilter by quality, HDR, audio, codec and source from the chips on the stream list. Your selection is remembered.")
                 }
 
                 TraktSection()

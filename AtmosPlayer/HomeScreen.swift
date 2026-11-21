@@ -16,6 +16,8 @@ struct HomeScreen: View {
     @ObservedObject private var router = AppRouter.shared
 
     @State private var path = NavigationPath()
+    /// Title pages zoom out of the card tapped.
+    @Namespace private var zoom
     @State private var startingId: String?
     @State private var pull = HeroPull()
 
@@ -150,7 +152,8 @@ struct HomeScreen: View {
             .background(Color.black)
             .navigationTitle("Home")
             .toolbar(showsHero ? .hidden : .visible, for: .navigationBar)
-            .modifier(BrowseDestinations())
+            .modifier(BrowseDestinations(zoom: zoom))
+            .environment(\.zoomNamespace, zoom)
             .task { await feed.load() }
             .task(id: watch.entries.first?.ref.metaId) {
                 await feed.loadSuggestion(from: watch.entries.first)
@@ -259,6 +262,8 @@ struct HomeScreen: View {
     }
 
     private func open(_ item: MetaPreview) {
+        // From the hero: a plain push (its art isn't a card to zoom out of).
+        ZoomTap.sources[item.id] = nil
         path.append(MetaRef(item))
     }
 
@@ -568,8 +573,14 @@ struct HeroCarousel: View {
                                      else if trailerPage == item.id { trailerPage = nil }
                                  }) { onOpen(item) }
                             .frame(width: geo.size.width, height: geo.size.height)
-                            .scrollTransition(.interactive, axis: .horizontal) { view, phase in
-                                view.opacity(phase.isIdentity ? 1 : 0.55)
+                            // Apple TV's hero: pages don't slide past, they dissolve into each other
+                            // in place. Each page holds still against the scroll (drifting just a
+                            // little with the finger) and fades by how far it is from the middle, so
+                            // a swipe or the auto-advance is a cross-dissolve with paging's own feel.
+                            .scrollTransition(.interactive, axis: .horizontal) { [width = geo.size.width] view, phase in
+                                view
+                                    .opacity(1 - min(abs(phase.value), 1))
+                                    .offset(x: -phase.value * width * 0.88)
                             }
                             .id(item.id)
                     }
@@ -644,7 +655,7 @@ struct HeroCarousel: View {
             try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
             let index = items.firstIndex { $0.id == activeId } ?? 0
-            withAnimation(.smooth(duration: 0.85)) { current = items[(index + 1) % items.count].id }
+            withAnimation(.easeInOut(duration: 0.9)) { current = items[(index + 1) % items.count].id }
         }
     }
 
@@ -674,12 +685,9 @@ private struct HeroSize: ViewModifier {
     let landscape: Bool
 
     func body(content: Content) -> some View {
-        if wide {
-            content.containerRelativeFrame(.vertical) { height, _ in
-                landscape ? height * 0.94 : height * 0.68
-            }
-        } else {
-            content.aspectRatio(0.72, contentMode: .fit)
+        // Portrait iPhone: about four fifths of the screen, like the TV app's.
+        content.containerRelativeFrame(.vertical) { height, _ in
+            wide ? (landscape ? height * 0.94 : height * 0.68) : height * 0.8
         }
     }
 }
@@ -736,16 +744,16 @@ struct HeroCard: View {
                     // Portrait: the logo sits over the lower half, where some backdrops have their
                     // own title printed; a deeper shade there keeps the logo the only lettering read.
                     LinearGradient(stops: [
-                        .init(color: .black.opacity(0.45), location: 0),
-                        .init(color: .clear, location: 0.16),
-                        .init(color: .clear, location: 0.24),
-                        .init(color: .black.opacity(0.75), location: 0.44),
-                        .init(color: .black.opacity(0.92), location: 0.58),
-                        .init(color: .black, location: 0.72),
+                        .init(color: .black.opacity(0.4), location: 0),
+                        .init(color: .clear, location: 0.14),
+                        .init(color: .clear, location: 0.42),
+                        .init(color: .black.opacity(0.6), location: 0.6),
+                        .init(color: .black.opacity(0.88), location: 0.78),
+                        .init(color: .black, location: 0.95),
                     ], startPoint: .top, endPoint: .bottom)
                     // Darkest right behind the logo, fading out to the sides.
-                    RadialGradient(colors: [.black.opacity(0.7), .clear], center: UnitPoint(x: 0.5, y: 0.56),
-                                   startRadius: 0, endRadius: 240)
+                    RadialGradient(colors: [.black.opacity(0.6), .clear], center: UnitPoint(x: 0.5, y: 0.72),
+                                   startRadius: 0, endRadius: 230)
                 }
                 if wide {
                     LinearGradient(colors: [.black.opacity(0.8), .black.opacity(0.35), .clear],
@@ -795,10 +803,9 @@ struct HeroCard: View {
             HStack(spacing: 12) {
                 Button(action: onOpen) {
                     Label("Watch Now", systemImage: "play.fill")
-                        .font(.subheadline.weight(.bold))
-                        .frame(maxWidth: wide ? 200 : 230)
-                        .padding(.vertical, 13)
-                        .padding(.horizontal, wide ? 22 : 0)
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 26)
+                        .frame(height: 44)
                         .background(.white, in: Capsule())
                         .foregroundStyle(.black)
                 }
@@ -810,7 +817,7 @@ struct HeroCard: View {
                     Image(systemName: inList ? "checkmark" : "plus")
                         .font(.headline)
                         .contentTransition(.symbolEffect(.replace))
-                        .frame(width: 46, height: 46)
+                        .frame(width: 44, height: 44)
                         .glass(Circle(), interactive: true)
                 }
                 .accessibilityLabel(inList ? "Remove from My List" : "Add to My List")
@@ -832,7 +839,8 @@ private struct HomeSkeleton: View {
         VStack(alignment: .leading, spacing: 28) {
             Rectangle()
                 .fill(Color.white.opacity(0.06))
-                .aspectRatio(0.74, contentMode: .fit)
+                // The hero's own height, so nothing jumps when it arrives.
+                .containerRelativeFrame(.vertical) { height, _ in height * 0.8 }
             ForEach(0..<2, id: \.self) { _ in
                 VStack(alignment: .leading, spacing: 10) {
                     RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.08))

@@ -37,7 +37,6 @@ targets:
           NSAllowsArbitraryLoads: true
         UIBackgroundModes:
           - audio
-        NSSupportsLiveActivities: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations:

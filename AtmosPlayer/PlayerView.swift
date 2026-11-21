@@ -203,6 +203,7 @@ struct PlayerView: View {
         }
         .onAppear {
             status.attach(engine)
+            PlayerBrightness.shared.enter()
             UIApplication.shared.isIdleTimerDisabled = true
             // iPad plays in whichever way it is held; iPhone turns to landscape.
             OrientationLock.set(Device.isPad ? .all : .landscape)
@@ -211,6 +212,7 @@ struct PlayerView: View {
         }
         .onDisappear {
             recordProgress(push: true)
+            PlayerBrightness.shared.leave()
             hideTask?.cancel()
             countdownTask?.cancel()
             sleepTask?.cancel()
@@ -225,7 +227,11 @@ struct PlayerView: View {
             if item.securityScoped { item.url.stopAccessingSecurityScopedResource() }
         }
         .onChange(of: scenePhase) { old, phase in
-            if old == .active { playingWhenLeft = status.state == .playing }
+            if old == .active {
+                playingWhenLeft = status.state == .playing
+                PlayerBrightness.shared.resign()
+            }
+            if phase == .active { PlayerBrightness.shared.resume() }
             // iOS may end the app while it's in the background; save first.
             if phase == .background { recordProgress(push: true) }
             // Back from the background: rebuild the picture iOS made the engine release, paused
@@ -334,7 +340,9 @@ struct PlayerView: View {
         // A swipe across 60 % of the screen's height goes from 0 to full.
         let level = min(max(swipeStart - value.translation.height / (size.height * 0.6), 0), 1)
         switch kind {
-        case .brightness: DeviceLevels.shared.brightness = level
+        case .brightness:
+            DeviceLevels.shared.brightness = level
+            PlayerBrightness.shared.swiped(to: level)
         case .volume: DeviceLevels.shared.volume = level
         }
         hud = AdjustmentHUD(kind: kind, value: level)
@@ -800,6 +808,8 @@ struct PlayerView: View {
         countdownTask?.cancel()
         sleepTask?.cancel()
         if engine.state == .playing { engine.togglePlayPause() }
+        // The screen glides back to the phone's brightness as the player fades out.
+        PlayerBrightness.shared.leave()
         coordinator.current = nil
     }
 

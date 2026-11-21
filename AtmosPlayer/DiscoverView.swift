@@ -52,19 +52,27 @@ enum CatalogLoader {
 
 /// Navigation targets shared by every browsing stack.
 struct BrowseDestinations: ViewModifier {
+    /// The stack's zoom namespace: title pages zoom out of the card tapped, and the pages
+    /// pushed after them zoom from their own cards too.
+    var zoom: Namespace.ID? = nil
+
     func body(content: Content) -> some View {
         content
             .navigationDestination(for: MetaRef.self) { ref in
                 MetaDetailView(ref: ref)
+                    .modifier(ZoomDestination(id: ref.id, namespace: zoom))
+                    .environment(\.zoomNamespace, zoom)
             }
             .navigationDestination(for: StreamsRoute.self) { route in
                 StreamsView(video: route.video, queue: route.queue)
             }
             .navigationDestination(for: CatalogRoute.self) { route in
                 CatalogGridScreen(route: route)
+                    .environment(\.zoomNamespace, zoom)
             }
             .navigationDestination(for: PersonRoute.self) { route in
                 PersonScreen(route: route)
+                    .environment(\.zoomNamespace, zoom)
             }
     }
 }
@@ -160,12 +168,74 @@ struct Shelf<Content: View>: View {
     }
 }
 
-/// Cards shrink slightly while pressed, the way storefront cards do.
+/// Cards sink slightly and dim a touch while pressed, then spring back, the way storefront cards do.
 struct CardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.95 : 1)
-            .animation(.spring(duration: 0.25), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .brightness(configuration.isPressed ? -0.06 : 0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Zoom into title pages
+
+/// The namespace a stack's title pages zoom out of (set on each browsing stack).
+private struct ZoomNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+extension EnvironmentValues {
+    var zoomNamespace: Namespace.ID? {
+        get { self[ZoomNamespaceKey.self] }
+        set { self[ZoomNamespaceKey.self] = newValue }
+    }
+}
+
+/// Which card was tapped last for each title. A title can be on screen twice (the hero and a
+/// row, My List and a row), so each card has its own zoom identity and its page zooms out of
+/// the one you actually touched.
+enum ZoomTap {
+    nonisolated(unsafe) static var sources: [String: String] = [:]
+}
+
+/// A card a title page grows out of when it opens, and shrinks back into when you go back.
+struct ZoomSource: ViewModifier {
+    let id: String
+    @Environment(\.zoomNamespace) private var namespace
+    @State private var key = UUID().uuidString
+
+    func body(content: Content) -> some View {
+        if let namespace {
+            content
+                .matchedTransitionSource(id: key, in: namespace) { source in
+                    source.clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .simultaneousGesture(TapGesture().onEnded { ZoomTap.sources[id] = key })
+        } else {
+            content
+        }
+    }
+}
+
+/// A title page that opens by zooming out of the card tapped; anything else (the hero, a
+/// link, Spotlight) is a plain push.
+struct ZoomDestination: ViewModifier {
+    let namespace: Namespace.ID?
+    /// Decided when the page is made, so it stays the same for the page's whole life.
+    @State private var source: String?
+
+    init(id: String, namespace: Namespace.ID?) {
+        self.namespace = namespace
+        _source = State(initialValue: ZoomTap.sources[id])
+    }
+
+    func body(content: Content) -> some View {
+        if let namespace, let source {
+            content.navigationTransition(.zoom(sourceID: source, in: namespace))
+        } else {
+            content
+        }
     }
 }
 
@@ -214,6 +284,7 @@ struct TitleCardExtras: ViewModifier {
     func body(content: Content) -> some View {
         if let ref {
             content
+                .modifier(ZoomSource(id: ref.id))
                 .contextMenu { menu(ref) }
                 .task(id: ref.id) {
                     // Only cards you stop on, not every one scrolled past.
@@ -280,6 +351,7 @@ struct SearchScreen: View {
     @EnvironmentObject private var addons: AddonStore
     @ObservedObject private var feed = HomeFeed.shared
     @ObservedObject private var router = AppRouter.shared
+    @Namespace private var zoom
 
     @State private var query = ""
     @State private var results: [CatalogRow] = []
@@ -365,7 +437,8 @@ struct SearchScreen: View {
             .searchable(text: $query, prompt: "Movies, series, people")
             .autocorrectionDisabled()
             .onSubmit(of: .search) { remember(trimmed) }
-            .modifier(BrowseDestinations())
+            .modifier(BrowseDestinations(zoom: zoom))
+            .environment(\.zoomNamespace, zoom)
             .task(id: trimmed) { await search(trimmed) }
             // "Search Atmos Player for …" from Siri or Shortcuts.
             .task(id: router.revision) {

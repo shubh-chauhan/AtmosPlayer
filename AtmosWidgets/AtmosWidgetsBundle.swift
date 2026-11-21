@@ -5,6 +5,5 @@ import SwiftUI
 struct AtmosWidgetsBundle: WidgetBundle {
     var body: some Widget {
         ContinueWatchingWidget()
-        PlaybackLiveActivity()
     }
 }

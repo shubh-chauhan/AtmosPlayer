@@ -752,7 +752,7 @@ struct MetaDetailView: View {
         seasons = seen
         addonVideoIds = found.videos.map(\.id)
         if !addonVideoIds.isEmpty { watched.reconcile(metaId: ref.id, videoIds: addonVideoIds) }
-        withAnimation(.easeOut(duration: 0.3)) { meta = found }
+        withAnimation(.smooth(duration: 0.45)) { meta = found }
 
         // Open on the season you were watching, otherwise the next one up.
         if let latest = watch.entries.first(where: { $0.ref.metaId == ref.id }),
@@ -782,7 +782,7 @@ struct MetaDetailView: View {
         } else {
             orderedVideos = EpisodeQueue.ordered(richer.videos)
         }
-        withAnimation(.easeOut(duration: 0.3)) { meta = richer }
+        withAnimation(.smooth(duration: 0.45)) { meta = richer }
     }
 }
 

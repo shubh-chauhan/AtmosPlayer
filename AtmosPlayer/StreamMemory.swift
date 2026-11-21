@@ -109,7 +109,8 @@ enum QuickPlay {
     }
 
     static let autoPickKey = "streams.autoPickBest"
-    static var autoPickOn: Bool { Prefs.bool(autoPickKey, default: true) }
+    /// Off unless turned on: the first play of a title opens the stream list, so you choose.
+    static var autoPickOn: Bool { Prefs.bool(autoPickKey, default: false) }
 
     /// Every addon asked at once (10 s at most); the best playable stream that passes your saved
     /// filters starts: resolution, then Dolby Vision / HDR, then Atmos and lossless sound, then
