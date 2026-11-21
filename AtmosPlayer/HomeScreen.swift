@@ -538,6 +538,8 @@ struct HeroCarousel: View {
     /// On screen: not scrolled away, not covered by a pushed page or another tab.
     @State private var onScreen = true
     @State private var appeared = true
+    /// Trailer sound, like the TV app's speaker button. Muted again whenever Home leaves the screen.
+    @State private var trailerMuted = true
 
     private let interval: Double = 7
 
@@ -567,6 +569,7 @@ struct HeroCarousel: View {
                     ForEach(items) { item in
                         HeroCard(item: item, wide: wide, active: item.id == activeId, sideInset: sideInset,
                                  previewing: item.id == activeId && !paused && onScreen && appeared,
+                                 muted: trailerMuted,
                                  stretch: item.id == activeId ? pull.stretch : 0,
                                  onTrailer: { showing in
                                      if showing { trailerPage = item.id }
@@ -603,6 +606,28 @@ struct HeroCarousel: View {
                     if !interacting { cycle += 1 }
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                if trailerShowing {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) { trailerMuted.toggle() }
+                    } label: {
+                        Image(systemName: trailerMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .contentTransition(.symbolEffect(.replace))
+                            .frame(width: 38, height: 38)
+                            .glass(Circle(), interactive: true)
+                    }
+                    .buttonStyle(PressScaleButtonStyle(scale: 0.9))
+                    .foregroundStyle(.white)
+                    .sensoryFeedback(.selection, trigger: trailerMuted)
+                    .accessibilityLabel(trailerMuted ? "Turn trailer sound on" : "Mute trailer")
+                    // Below the status bar (the carousel runs under it).
+                    .padding(.top, Self.topInset + 8)
+                    .padding(.trailing, (wide ? sideInset : 0) + 16)
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                }
+            }
+            .animation(.smooth(duration: 0.3), value: trailerShowing)
             .overlay(alignment: wide ? .bottomTrailing : .bottom) {
                 indicator
                     .padding(.bottom, wide ? 22 : 12)
@@ -613,7 +638,13 @@ struct HeroCarousel: View {
         .modifier(HeroSize(wide: wide, landscape: verticalSize == .compact))
         .onScrollVisibilityChange(threshold: 0.35) { onScreen = $0 }
         .onAppear { appeared = true }
-        .onDisappear { appeared = false }
+        .onDisappear {
+            appeared = false
+            trailerMuted = true
+        }
+        .onChange(of: coordinator.current?.id) { _, playing in
+            if playing != nil { trailerMuted = true }
+        }
         // A page that was removed (its artwork never loaded) hands over to the first one.
         .onChange(of: items.map(\.id)) { _, ids in
             if let current, !ids.contains(current) { self.current = nil }
@@ -653,6 +684,11 @@ struct HeroCarousel: View {
             let index = items.firstIndex { $0.id == activeId } ?? 0
             withAnimation(.smooth(duration: 0.85)) { current = items[(index + 1) % items.count].id }
         }
+    }
+
+    /// The status bar's height: the carousel draws under it.
+    private static var topInset: CGFloat {
+        UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets.top ?? 47
     }
 
     private var indicator: some View {
@@ -695,6 +731,8 @@ struct HeroCard: View {
     var sideInset: CGFloat = 0
     /// Rested on and visible: its trailer may play.
     var previewing = false
+    /// Trailer sound off (the carousel's speaker button).
+    var muted = true
     /// Points Home is pulled down past its top; the artwork scales up from the bottom to fill it.
     var stretch: CGFloat = 0
     var onTrailer: (Bool) -> Void = { _ in }
@@ -724,7 +762,7 @@ struct HeroCard: View {
                             .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
                     }
                     .overlay {
-                        TrailerBackdrop(youtubeId: item.trailerId, active: previewing, onShowing: onTrailer)
+                        TrailerBackdrop(youtubeId: item.trailerId, active: previewing, muted: muted, onShowing: onTrailer)
                     }
                     .clipped()
 
