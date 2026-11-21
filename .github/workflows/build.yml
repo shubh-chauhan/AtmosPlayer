@@ -139,7 +139,16 @@ jobs:
           NOTES=$(git log -1 --pretty=%s)
           gh release view sidestore >/dev/null 2>&1 || \
             gh release create sidestore --title "Latest build" --notes "The newest Atmos Player build, for SideStore." --latest
-          gh release upload sidestore AtmosPlayer.ipa --clobber
+          # Each build also gets its own file name, and that is the link SideStore downloads: a
+          # link reused by every build could be served stale from a cache for a few minutes after
+          # an upload, and SideStore then refuses the update because the file's version doesn't
+          # match the listing. AtmosPlayer.ipa stays as the fixed "latest" link for Sideloadly.
+          cp AtmosPlayer.ipa "AtmosPlayer-$VERSION.ipa"
+          gh release upload sidestore AtmosPlayer.ipa "AtmosPlayer-$VERSION.ipa" --clobber
+          # Keep the newest three numbered builds.
+          gh release view sidestore --json assets -q '.assets[].name' \
+            | grep -E '^AtmosPlayer-0\.1\.[0-9]+\.ipa$' | sort -t. -k3 -nr | tail -n +4 \
+            | while read -r old; do gh release delete-asset sidestore "$old" -y || true; done
           gh release edit sidestore --notes "Atmos Player $VERSION: $NOTES"
           mkdir source
           cp AtmosPlayer/Assets.xcassets/AppIcon.appiconset/AppIcon.png source/icon.png
@@ -148,7 +157,7 @@ jobs:
           import json, os, datetime
           repo = os.environ["REPO"]
           raw = f"https://raw.githubusercontent.com/{repo}/source"
-          download = f"https://github.com/{repo}/releases/download/sidestore/AtmosPlayer.ipa"
+          download = f"https://github.com/{repo}/releases/download/sidestore/AtmosPlayer-{os.environ['VERSION']}.ipa"
           size = os.path.getsize("AtmosPlayer.ipa")
           date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
           description = "Stremio streams with Dolby Atmos and Dolby Vision."
