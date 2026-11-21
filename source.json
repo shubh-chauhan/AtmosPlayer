@@ -1,0 +1,41 @@
+{
+  "name": "Atmos Player",
+  "identifier": "com.atmosplayer.source",
+  "subtitle": "Builds of Atmos Player",
+  "iconURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/icon.png",
+  "sourceURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/source.json",
+  "apps": [
+    {
+      "name": "Atmos Player",
+      "bundleIdentifier": "com.atmosplayer.app",
+      "developerName": "shubh-chauhan",
+      "subtitle": "Atmos and Dolby Vision player",
+      "localizedDescription": "Stremio streams with Dolby Atmos and Dolby Vision.",
+      "iconURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/icon.png",
+      "tintColor": "6B66FF",
+      "category": "entertainment",
+      "screenshots": [],
+      "versions": [
+        {
+          "version": "0.1.59",
+          "buildVersion": "59",
+          "date": "2026-11-21T14:37:16Z",
+          "localizedDescription": "SideStore: download each build from the source branch, not GitHub releases",
+          "downloadURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/AtmosPlayer-0.1.59.ipa",
+          "size": 13063817,
+          "minOSVersion": "18.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      },
+      "version": "0.1.59",
+      "versionDate": "2026-11-21T14:37:16Z",
+      "versionDescription": "SideStore: download each build from the source branch, not GitHub releases",
+      "downloadURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/AtmosPlayer-0.1.59.ipa",
+      "size": 13063817
+    }
+  ],
+  "news": []
+}
