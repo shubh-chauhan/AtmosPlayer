@@ -1200,8 +1200,8 @@ struct ScrubBar: View {
     private var duration: Double { max(engine.duration, 0.1) }
     private var shownTime: Double { dragTime ?? clock.currentTime }
 
-    private static let previewWidth: CGFloat = 240
-    private static let previewHeight: CGFloat = 135
+    private static let previewWidth: CGFloat = 208
+    private static let previewHeight: CGFloat = 117
 
     var body: some View {
         VStack(spacing: 8) {
