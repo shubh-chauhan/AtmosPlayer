@@ -1,24 +1,24 @@
 diff --git a/Sources/AetherEngine/Demuxer/Demuxer.swift b/Sources/AetherEngine/Demuxer/Demuxer.swift
-index 30fd313..593fbbd 100644
+index 7472339..2c3ebb7 100644
 --- a/Sources/AetherEngine/Demuxer/Demuxer.swift
 +++ b/Sources/AetherEngine/Demuxer/Demuxer.swift
-@@ -796,6 +796,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -828,6 +828,7 @@ public final class Demuxer: @unchecked Sendable {
          refreshStreamTableLocked()
          accessLock.unlock()
          reportOpenStage(.streamsProbed)
 +        backfillColorFromParameterSets()
          promoteAlternativeTransferHLG()
+         applyUntaggedVideoColor()
      }
- 
-@@ -1145,6 +1146,7 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1207,6 +1208,7 @@ public final class Demuxer: @unchecked Sendable {
          // the cold-start state that only exists to serve them. Deliberately after probeStreams:
          // find_stream_info is where the trailing-index ping-pong lives, not avformat_open_input.
          avioProvider?.markOpenPhaseFinished()
 +        backfillColorFromParameterSets()
          promoteAlternativeTransferHLG()
+         applyUntaggedVideoColor()
      }
- 
-@@ -1770,6 +1772,50 @@ public final class Demuxer: @unchecked Sendable {
+@@ -1886,6 +1888,50 @@ public final class Demuxer: @unchecked Sendable {
              : String(format: "0x%08X", tag)
      }
  
