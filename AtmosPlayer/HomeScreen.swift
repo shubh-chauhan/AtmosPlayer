@@ -263,7 +263,7 @@ struct HomeScreen: View {
 
     private func open(_ item: MetaPreview) {
         // From the hero: a plain push (its art isn't a card to zoom out of).
-        ZoomTap.sources[item.id] = nil
+        ZoomTap.plain.insert(item.id)
         path.append(MetaRef(item))
     }
 
@@ -563,49 +563,45 @@ struct HeroCarousel: View {
 
     var body: some View {
         GeometryReader { geo in
-            ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 0) {
-                    ForEach(items) { item in
-                        HeroCard(item: item, wide: wide, active: item.id == activeId, sideInset: sideInset,
-                                 previewing: item.id == activeId && !paused && onScreen && appeared,
+            // The TV app's hero: one page at a time, and a change of page (a swipe or the timer)
+            // dissolves the old picture into the new one in place. Only the page shown is drawn,
+            // so nothing slides past or ghosts over it.
+            ZStack {
+                ForEach(items) { item in
+                    if item.id == activeId {
+                        HeroCard(item: item, wide: wide, active: true, sideInset: sideInset,
+                                 previewing: !paused && onScreen && appeared,
                                  muted: trailerMuted,
-                                 stretch: item.id == activeId ? pull.stretch : 0,
+                                 stretch: pull.stretch,
                                  onTrailer: { showing in
                                      if showing { trailerPage = item.id }
                                      else if trailerPage == item.id { trailerPage = nil }
                                  }) { onOpen(item) }
                             .frame(width: geo.size.width, height: geo.size.height)
-                            // Pages slide with the finger (paging's own motion); the one leaving
-                            // dims a little. A dissolve in place was tried and read as ghosting.
-                            .scrollTransition(.interactive, axis: .horizontal) { view, phase in
-                                view.opacity(phase.isIdentity ? 1 : 0.55)
-                            }
-                            .id(item.id)
+                            .transition(.opacity)
                     }
                 }
-                .scrollTargetLayout()
             }
-            .scrollTargetBehavior(.paging)
-            .scrollIndicators(.hidden)
-            // The current page's artwork grows above the carousel on pull-down.
-            .scrollClipDisabled()
-            .scrollPosition(id: $current)
-            // Pages are exactly the screen's width: no extra inset for the notch, which would
-            // shift every page sideways in landscape.
-            .contentMargins(.horizontal, 0, for: .scrollContent)
-            .ignoresSafeArea(edges: .horizontal)
-            // After a rotation, land back on the same page.
-            .onChange(of: geo.size.width) { _, _ in
-                if let id = activeId { proxy.scrollTo(id, anchor: .leading) }
-            }
-            .onScrollPhaseChange { _, phase in
-                let interacting = phase == .interacting || phase == .tracking
-                if dragging != interacting {
-                    dragging = interacting
-                    if !interacting { cycle += 1 }
-                }
-            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .contentShape(Rectangle())
+            // Swipe sideways for the next or previous page. Simultaneous, so Home still scrolls
+            // up and down from here, and taps on the page and its buttons still go through.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24)
+                    .onChanged { value in
+                        if !dragging, abs(value.translation.width) > abs(value.translation.height) { dragging = true }
+                    }
+                    .onEnded { value in
+                        let dx = value.translation.width, dy = value.translation.height
+                        let flick = value.predictedEndTranslation.width
+                        dragging = false
+                        guard abs(dx) > abs(dy) * 1.3, abs(dx) > 50 || abs(flick) > 140 else {
+                            cycle += 1
+                            return
+                        }
+                        step(dx < 0 ? 1 : -1)
+                    }
+            )
             .overlay(alignment: .topTrailing) {
                 if trailerShowing {
                     Button {
@@ -632,7 +628,6 @@ struct HeroCarousel: View {
                 indicator
                     .padding(.bottom, wide ? 22 : 12)
                     .padding(.trailing, wide ? sideInset + 28 : 0)
-            }
             }
         }
         .modifier(HeroSize(wide: wide, landscape: verticalSize == .compact))
@@ -682,8 +677,17 @@ struct HeroCarousel: View {
             try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
             let index = items.firstIndex { $0.id == activeId } ?? 0
-            withAnimation(.smooth(duration: 0.85)) { current = items[(index + 1) % items.count].id }
+            withAnimation(.easeInOut(duration: 0.7)) { current = items[(index + 1) % items.count].id }
         }
+    }
+
+    /// The next (1) or previous (-1) page, dissolving in.
+    private func step(_ by: Int) {
+        guard !items.isEmpty, let index = items.firstIndex(where: { $0.id == activeId }) else { return }
+        let next = items[(index + by + items.count) % items.count].id
+        withAnimation(.easeInOut(duration: 0.55)) { current = next }
+        cycle += 1
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 
     /// The status bar's height: the carousel draws under it.

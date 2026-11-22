@@ -192,47 +192,45 @@ extension EnvironmentValues {
     }
 }
 
-/// Which card was tapped last for each title. A title can be on screen twice (the hero and a
-/// row, My List and a row), so each card has its own zoom identity and its page zooms out of
-/// the one you actually touched.
+/// Titles to open with a plain push: the hero has no card to zoom out of.
 enum ZoomTap {
-    nonisolated(unsafe) static var sources: [String: String] = [:]
+    nonisolated(unsafe) static var plain: Set<String> = []
 }
 
 /// A card a title page grows out of when it opens, and shrinks back into when you go back.
+/// No gesture of its own: on iOS 18 a tap gesture inside a link's label swallows the link's tap.
 struct ZoomSource: ViewModifier {
     let id: String
     @Environment(\.zoomNamespace) private var namespace
-    @State private var key = UUID().uuidString
 
     func body(content: Content) -> some View {
         if let namespace {
-            content
-                .matchedTransitionSource(id: key, in: namespace) { source in
-                    source.clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .simultaneousGesture(TapGesture().onEnded { ZoomTap.sources[id] = key })
+            // shortcut: a title shown twice on one screen (My List and a row) zooms from either.
+            content.matchedTransitionSource(id: id, in: namespace) { source in
+                source.clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
         } else {
             content
         }
     }
 }
 
-/// A title page that opens by zooming out of the card tapped; anything else (the hero, a
-/// link, Spotlight) is a plain push.
+/// A title page that opens by zooming out of its card; from the hero, a plain push.
 struct ZoomDestination: ViewModifier {
+    let id: String
     let namespace: Namespace.ID?
     /// Decided when the page is made, so it stays the same for the page's whole life.
-    @State private var source: String?
+    @State private var zooms: Bool
 
     init(id: String, namespace: Namespace.ID?) {
+        self.id = id
         self.namespace = namespace
-        _source = State(initialValue: ZoomTap.sources[id])
+        _zooms = State(initialValue: ZoomTap.plain.remove(id) == nil)
     }
 
     func body(content: Content) -> some View {
-        if let namespace, let source {
-            content.navigationTransition(.zoom(sourceID: source, in: namespace))
+        if let namespace, zooms {
+            content.navigationTransition(.zoom(sourceID: id, in: namespace))
         } else {
             content
         }
