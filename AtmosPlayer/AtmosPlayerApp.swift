@@ -17,9 +17,12 @@ final class AppModel: ObservableObject {
             // This app plays no other audio, so let the engine release the session on stop.
             created.deactivatesAudioSessionOnStop = true
             // Lock screen / Control Center: title, artwork, play/pause and seeking.
-            created.ownsVideoNowPlayingSession = true
-            created.ownsVideoNowPlayingCommands = true
-            created.ownsSoftwareNowPlaying = true
+            // Off: the system's Now Playing player sat in the Dynamic Island (the notch) whenever
+            // you left the app with something loaded. Turning it on again brings back the
+            // lock-screen and headphone controls with it.
+            created.ownsVideoNowPlayingSession = false
+            created.ownsVideoNowPlayingCommands = false
+            created.ownsSoftwareNowPlaying = false
             // The subtitle timing control goes to ±10 s; keeping less cue history saves memory.
             created.maximumSubtitleOffsetSeconds = 10
             engine = created

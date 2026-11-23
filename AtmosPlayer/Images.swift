@@ -128,6 +128,15 @@ enum ArtworkURL {
         ranked(id: id, own: poster) { "https://images.metahub.space/poster/medium/\($0)/img" }
     }
 
+    /// What a hero tries when TMDB's art isn't there: posters first for a tall frame (a backdrop
+    /// cropped that narrow is mostly blown-up middle), backdrops first for a wide one.
+    static func heroFallbacks(id: String?, background: String?, poster: String?, portrait: Bool) -> [String] {
+        let wide = backdrops(id: id, background: background, poster: poster)
+        guard portrait else { return wide }
+        var seen = Set<String>()
+        return (posters(id: id, poster: poster) + wide).filter { seen.insert($0).inserted }
+    }
+
     /// Backdrops ranked the same way, with the poster last so a card is never left empty.
     static func backdrops(id: String?, background: String?, poster: String? = nil) -> [String] {
         var list = ranked(id: id, own: background) { "https://images.metahub.space/background/medium/\($0)/img" }
@@ -302,6 +311,8 @@ struct LandscapeArtwork: View {
     var maxPixel: Int = 1000
 
     @State private var image: UIImage?
+    /// Still looking: a pulsing stand-in, not the "no picture" symbol.
+    @State private var loading = false
 
     init(candidates: [String], maxPixel: Int = 1000) {
         self.candidates = candidates
@@ -332,13 +343,17 @@ struct LandscapeArtwork: View {
                     }
                 } else {
                     ZStack {
-                        Color.white.opacity(0.08)
-                        Image(systemName: "film").foregroundStyle(.white.opacity(0.3))
+                        LoadingShade(active: loading)
+                        if !loading {
+                            Image(systemName: "film").foregroundStyle(.white.opacity(0.3))
+                        }
                     }
                 }
             }
             .clipped()
             .task(id: candidates) {
+                loading = image == nil && !candidates.isEmpty
+                defer { loading = false }
                 for candidate in candidates {
                     guard let url = ArtworkURL.best(candidate, maxPixel: maxPixel) else { continue }
                     if let hit = ImagePipeline.shared.cached(url, maxPixel: maxPixel) {

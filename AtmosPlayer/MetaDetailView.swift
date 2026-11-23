@@ -234,8 +234,9 @@ struct MetaDetailView: View {
         }
         .task(id: wide) {
             let picked = await MetaResolver.heroArt(for: ref, portrait: !wide,
-                                                    fallbacks: ArtworkURL.backdrops(id: ref.id, background: background,
-                                                                                    poster: meta?.poster ?? ref.poster),
+                                                    fallbacks: ArtworkURL.heroFallbacks(id: ref.id, background: background,
+                                                                                        poster: meta?.poster ?? ref.poster,
+                                                                                        portrait: !wide),
                                                     maxPixel: UIDevice.current.userInterfaceIdiom == .pad ? 2400 : 1800)
             if !Task.isCancelled { withAnimation(.easeOut(duration: 0.25)) { heroChosen = picked; heroReady = true } }
         }

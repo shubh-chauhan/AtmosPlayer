@@ -259,7 +259,10 @@ struct PosterCard: View {
                 .lineLimit(1)
                 .frame(width: width, alignment: .leading)
             if let subtitle {
+                // One line at the card's width: a long one would widen the card and break the row's rhythm.
                 Text(subtitle).font(.caption2).foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+                    .frame(width: width, alignment: .leading)
             }
         }
         .titleCard(id.map { MetaRef(id: $0, type: type, name: title, poster: poster) })

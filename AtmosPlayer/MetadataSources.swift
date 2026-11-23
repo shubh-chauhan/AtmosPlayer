@@ -429,7 +429,8 @@ enum MetaResolver {
     private static var heroMemo: [String: String] = loadHeroMemo()
     private static var heroSave: Task<Void, Never>?
     private static let heroFile: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("hero-art-v1.json")
+        // v2: tall frames now prefer posters, so pictures decided by v1 are decided again.
+        .appendingPathComponent("hero-art-v2.json")
 
     private static func loadHeroMemo() -> [String: String] {
         guard let data = try? Data(contentsOf: heroFile) else { return [:] }

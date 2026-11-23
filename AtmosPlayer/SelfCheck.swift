@@ -153,6 +153,11 @@ enum SelfCheck {
         expect(extras.textlessBackdrop == TMDB.imageBase + "w1280/t.jpg", "textless backdrop is the no-language one")
         expect(extras.heroArt(portrait: true) == TMDB.imageBase + "original/tp.jpg"
                && extras.heroArt(portrait: false) == extras.textlessBackdrop, "portrait frames get the textless poster")
+        var titled = extras
+        titled.textlessPoster = nil
+        titled.poster = TMDB.imageBase + "w780/p.jpg"
+        expect(titled.heroArt(portrait: true) == TMDB.imageBase + "original/p.jpg",
+               "no textless poster: a tall frame takes the full-size poster, not a cropped backdrop")
         expect(extras.cast.first?.role == "Hero" && extras.cast.first?.photo == TMDB.imageBase + "w185/c.jpg",
                "cast with character and photo")
         expect(extras.companies == ["Studio"] && extras.countries == ["France"], "companies and countries")

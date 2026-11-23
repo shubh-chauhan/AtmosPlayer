@@ -336,7 +336,7 @@ struct RankedCard: View {
     let item: MetaPreview
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: rank == 10 ? -30 : -18) {
+        HStack(alignment: .bottom, spacing: Device.size(rank == 10 ? -30 : -18)) {
             RankNumber(rank: rank)
             RemoteImage(candidates: ArtworkURL.posters(id: item.id, poster: item.poster),
                         lookup: ArtworkLookup(id: item.id, type: item.type, kind: .poster), maxPixel: 600)
@@ -355,7 +355,7 @@ private struct RankNumber: View {
     let rank: Int
 
     var body: some View {
-        let text = Text("\(rank)").font(.system(size: 118, weight: .black, design: .rounded))
+        let text = Text("\(rank)").font(.system(size: Device.size(118), weight: .black, design: .rounded))
         ZStack {
             // A thin light outline around a dark figure, the classic Top 10 look.
             text.foregroundStyle(.white.opacity(0.55)).offset(x: -1.5)
@@ -365,8 +365,8 @@ private struct RankNumber: View {
             text.foregroundStyle(Color(white: 0.06))
         }
         .fixedSize()
-        .offset(y: 18)
-        .frame(height: 168, alignment: .bottom)
+        .offset(y: Device.size(18))
+        .frame(height: Device.size(168), alignment: .bottom)
         .clipped()
     }
 }
@@ -649,8 +649,8 @@ struct HeroCarousel: View {
             guard let index = items.firstIndex(where: { $0.id == activeId }), items.count > 1 else { return }
             for neighbour in [items[(index + 1) % items.count], items[(index + items.count - 1) % items.count]] {
                 _ = await MetaResolver.heroArt(for: MetaRef(neighbour), portrait: !wide,
-                                               fallbacks: ArtworkURL.backdrops(id: neighbour.id, background: neighbour.background,
-                                                                               poster: neighbour.poster),
+                                               fallbacks: ArtworkURL.heroFallbacks(id: neighbour.id, background: neighbour.background,
+                                                                                   poster: neighbour.poster, portrait: !wide),
                                                maxPixel: 1800)
             }
         }
@@ -746,6 +746,8 @@ struct HeroCard: View {
     @State private var ready = false
     /// The picture picked when TMDB's art wasn't decided in time.
     @State private var chosen: String?
+    /// Drives the slow push-in; set as the page appears (each page is drawn fresh when shown).
+    @State private var pushedIn = false
     @EnvironmentObject private var favorites: FavoritesStore
     @Environment(\.verticalSizeClass) private var verticalSize
     /// Landscape iPhone: little height, so a smaller logo and shorter synopsis.
@@ -762,8 +764,9 @@ struct HeroCard: View {
                         RemoteImage(url: MetaResolver.decidedHeroArt(MetaRef(item), portrait: !wide)
                                         ?? (ready ? chosen : nil),
                                     maxPixel: 1800, placeholderSymbol: "")
-                            .scaleEffect(active ? 1.07 : 1, anchor: wide ? .center : .top)
-                            .animation(active ? .linear(duration: 14) : .easeOut(duration: 0.4), value: active)
+                            .scaleEffect(active && pushedIn ? 1.07 : 1, anchor: wide ? .center : .top)
+                            .animation(active && pushedIn ? .linear(duration: 14) : .easeOut(duration: 0.4),
+                                       value: active && pushedIn)
                     }
                     .overlay {
                         TrailerBackdrop(youtubeId: item.trailerId, active: previewing, muted: muted, onShowing: onTrailer)
@@ -808,10 +811,11 @@ struct HeroCard: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
+        .onAppear { pushedIn = true }
         .task(id: "\(item.id)/\(wide)") {
             let picked = await MetaResolver.heroArt(for: MetaRef(item), portrait: !wide,
-                                                    fallbacks: ArtworkURL.backdrops(id: item.id, background: item.background,
-                                                                                    poster: item.poster),
+                                                    fallbacks: ArtworkURL.heroFallbacks(id: item.id, background: item.background,
+                                                                                        poster: item.poster, portrait: !wide),
                                                     maxPixel: 1800)
             if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { chosen = picked; ready = true } }
         }
@@ -872,13 +876,16 @@ struct HeroCard: View {
 /// Grey shapes while the very first Home loads (later launches show the saved one instantly).
 private struct HomeSkeleton: View {
     @State private var pulse = false
+    @Environment(\.verticalSizeClass) private var verticalSize
+    @Environment(\.horizontalSizeClass) private var horizontalSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
             Rectangle()
                 .fill(Color.white.opacity(0.06))
                 // The hero's own height, so nothing jumps when it arrives.
-                .containerRelativeFrame(.vertical) { height, _ in height * 0.8 }
+                .modifier(HeroSize(wide: verticalSize == .compact || horizontalSize == .regular,
+                                   landscape: verticalSize == .compact))
             ForEach(0..<2, id: \.self) { _ in
                 VStack(alignment: .leading, spacing: 10) {
                     RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.08))
@@ -970,7 +977,7 @@ struct GenreBrowser: View {
                 .foregroundStyle(.white)
                 .padding(12)
         }
-        .frame(width: 150, height: 86)
+        .frame(width: Device.size(150), height: Device.size(86))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

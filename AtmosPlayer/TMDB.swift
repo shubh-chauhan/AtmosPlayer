@@ -441,8 +441,11 @@ struct MetaExtras: Codable, Equatable {
     var availability: Availability?
 
     /// Text-free art shaped for the frame: a portrait poster for a tall one, else a backdrop.
+    /// A tall frame takes the full-size titled poster before a backdrop: a 1280-wide backdrop
+    /// cropped to a phone's height shows its middle third blown up about three times.
     func heroArt(portrait: Bool) -> String? {
-        portrait ? (textlessPoster ?? textlessBackdrop) : textlessBackdrop
+        guard portrait else { return textlessBackdrop }
+        return textlessPoster ?? poster.map { $0.replacingOccurrences(of: "/w780/", with: "/original/") } ?? textlessBackdrop
     }
 
     struct Availability: Codable, Equatable {
