@@ -721,9 +721,9 @@ private struct HeroSize: ViewModifier {
     let landscape: Bool
 
     func body(content: Content) -> some View {
-        // Portrait iPhone: about four fifths of the screen, like the TV app's.
+        // Portrait iPhone: a little over four fifths of the screen, like the TV app's.
         content.containerRelativeFrame(.vertical) { height, _ in
-            wide ? (landscape ? height * 0.94 : height * 0.68) : height * 0.8
+            wide ? (landscape ? height * 0.94 : height * 0.74) : height * 0.86
         }
     }
 }
