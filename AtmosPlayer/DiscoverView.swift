@@ -64,7 +64,7 @@ struct BrowseDestinations: ViewModifier {
                     .environment(\.zoomNamespace, zoom)
             }
             .navigationDestination(for: StreamsRoute.self) { route in
-                StreamsView(video: route.video, queue: route.queue)
+                StreamsView(video: route.video, queue: route.queue, startOver: route.startOver)
             }
             .navigationDestination(for: CatalogRoute.self) { route in
                 CatalogGridScreen(route: route)
@@ -86,6 +86,11 @@ struct TitleArt: View {
     @State private var logoFailed = false
 
     var body: some View {
+        content.onChange(of: logo) { _, _ in logoFailed = false }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let logo, !logoFailed, let url = URL(string: logo) {
             LogoImage(url: url, failed: $logoFailed)
                 .frame(maxHeight: maxHeight)
@@ -119,6 +124,7 @@ struct LogoImage: View {
                 return
             }
             let loaded = await ImagePipeline.shared.image(url, maxPixel: 800)
+            guard !Task.isCancelled else { return }
             if loaded == nil { failed = true } else { withAnimation { image = loaded } }
         }
     }
@@ -362,6 +368,8 @@ struct SearchScreen: View {
     @State private var addonsPending = 0
     /// What the rows on screen are for; older rows stay (dimmed) until the new ones arrive.
     @State private var shownQuery = ""
+    /// The last search that ran to the end (not cut short by leaving the screen).
+    @State private var completedQuery: String?
     /// Your addons' own catalogs, shown under Popular before you type.
     @State private var addonRows: [CatalogRow] = []
     @State private var addonRowsFor: [String] = []
@@ -448,7 +456,8 @@ struct SearchScreen: View {
                     query = text
                 }
             }
-            .task { await feed.load() }
+            // Its own task, so leaving Search mid-load doesn't cut the rows short.
+            .task { await Task { await feed.load() }.value }
             .task {
                 // CI screenshots only: type a search.
                 if PreviewMode.screen == "search-results", query.isEmpty {
@@ -598,6 +607,7 @@ struct SearchScreen: View {
     /// seconds, so a slow or broken one never keeps the screen waiting.
     private func search(_ text: String) async {
         guard !text.isEmpty else {
+            completedQuery = nil
             results = []
             people = []
             pending = 0
@@ -605,6 +615,9 @@ struct SearchScreen: View {
             shownQuery = ""
             return
         }
+        // Back from a title or another tab: its results are still showing.
+        guard text != completedQuery else { return }
+        defer { if !Task.isCancelled { completedQuery = text } }
         // Wait until typing pauses; a newer keystroke cancels this task.
         try? await Task.sleep(nanoseconds: 300_000_000)
         if Task.isCancelled { return }

@@ -5,6 +5,7 @@ import UIKit
 struct StreamsView: View {
     let video: VideoRef
     var queue: [VideoRef] = []
+    var startOver = false
     @EnvironmentObject private var addons: AddonStore
     @EnvironmentObject private var coordinator: PlayerCoordinator
     @EnvironmentObject private var watch: WatchStore
@@ -93,7 +94,9 @@ struct StreamsView: View {
                 Section("On this \(Device.isPad ? "iPad" : "iPhone")") {
                     DownloadRow(entry: saved) {
                         if let url = downloads.fileURL(saved) {
-                            coordinator.play(DownloadPlayback.item(saved, url: url, queue: queue))
+                            var item = DownloadPlayback.item(saved, url: url, queue: queue)
+                            item.startOver = startOver
+                            coordinator.play(item)
                         } else if saved.phase == .failed {
                             downloads.retry(saved)
                         }
@@ -186,6 +189,7 @@ struct StreamsView: View {
                 withAnimation(.easeOut(duration: 0.2)) { results = ordered }
             }
         }
+        if Task.isCancelled { results = [] }
     }
 
     private var lastStream: SavedStream? { LastStreamStore.shared.stream(forTitle: video.metaId) }
@@ -204,7 +208,8 @@ struct StreamsView: View {
 
     private func play(_ stream: StremioStream, from addonId: String) {
         let saved = SavedStream(stream, addonId: addonId, videoId: video.videoId)
-        if let item = QuickPlay.item(video: video, queue: queue, stream: saved) {
+        if var item = QuickPlay.item(video: video, queue: queue, stream: saved) {
+            item.startOver = startOver
             coordinator.play(item)
         }
     }

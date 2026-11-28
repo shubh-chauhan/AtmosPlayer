@@ -27,14 +27,16 @@ final class EpisodeCalendar: ObservableObject {
         // Same shows and loaded within the hour: nothing new to ask for.
         guard !follow.isEmpty else { fresh = []; upcoming = []; return }
         guard key != lastKey || Date().timeIntervalSince(lastLoad) > 3600 else { return }
-        lastKey = key
-        lastLoad = Date()
 
         let byId = Dictionary(follow.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var metas: [StremioMeta] = []
         for chunk in stride(from: 0, to: min(follow.count, 60), by: 20).map({ Array(follow[$0..<min($0 + 20, follow.count)]) }) {
             metas += await Cinemeta.calendar(ids: chunk.map(\.id))
         }
+        // Nothing came back (offline, Cinemeta down): the rows stay, and the next visit asks again.
+        guard !metas.isEmpty else { return }
+        lastKey = key
+        lastLoad = Date()
 
         let now = Date()
         let recent = now.addingTimeInterval(-21 * 86_400)

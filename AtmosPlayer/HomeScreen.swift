@@ -14,6 +14,7 @@ struct HomeScreen: View {
     @ObservedObject private var calendar = EpisodeCalendar.shared
     @ObservedObject private var recommender = Recommender.shared
     @ObservedObject private var router = AppRouter.shared
+    @ObservedObject private var watchedMarks = WatchedStore.shared
 
     @State private var path = NavigationPath()
     /// Title pages zoom out of the card tapped.
@@ -43,9 +44,9 @@ struct HomeScreen: View {
                         HomeSectionView(section: recommended)
                     }
 
-                    if !calendar.fresh.isEmpty {
+                    if !freshEpisodes.isEmpty {
                         Shelf(title: "New Episodes", spacing: 14) {
-                            ForEach(calendar.fresh) { item in
+                            ForEach(freshEpisodes) { item in
                                 NavigationLink(value: item.series) {
                                     CalendarEpisodeCard(item: item, upcoming: false)
                                 }
@@ -154,9 +155,10 @@ struct HomeScreen: View {
             .toolbar(showsHero ? .hidden : .visible, for: .navigationBar)
             .modifier(BrowseDestinations(zoom: zoom))
             .environment(\.zoomNamespace, zoom)
-            .task { await feed.load() }
+            .task { await Task { await feed.load() }.value }
             .task(id: watch.entries.first?.ref.metaId) {
-                await feed.loadSuggestion(from: watch.entries.first)
+                let latest = watch.entries.first
+                await Task { await feed.loadSuggestion(from: latest) }.value
             }
             // Personal rows: rebuilt when what you watch or save changes (at most every few hours otherwise).
             .task(id: tasteKey) {
@@ -164,11 +166,13 @@ struct HomeScreen: View {
                 guard PreviewMode.screen == nil else { return }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard !Task.isCancelled else { return }
-                await recommender.refresh(watch: watch, favorites: favorites, library: account.library)
+                let library = account.library
+                await Task { await recommender.refresh(watch: watch, favorites: favorites, library: library) }.value
             }
             // The shows you follow: refreshed when that list changes.
             .task(id: followedKey) {
-                await calendar.load(series: followed)
+                let shows = followed
+                await Task { await calendar.load(series: shows) }.value
             }
             // A title asked for by Spotlight or a link.
             .task(id: router.revision) {
@@ -183,7 +187,8 @@ struct HomeScreen: View {
                 coordinator.pendingResume = nil
                 if let entry = watch.entries.first(where: { $0.ref.videoId == id }) {
                     path = NavigationPath()
-                    await resume(entry.ref)
+                    // Its own task: clearing pendingResume above restarts (cancels) this one.
+                    Task { await resume(entry.ref) }
                 }
             }
             .refreshable {
@@ -203,6 +208,11 @@ struct HomeScreen: View {
                 }
             }
         }
+    }
+
+    /// New episodes not watched yet (one watched since the row loaded drops out at once).
+    private var freshEpisodes: [EpisodeCalendar.Item] {
+        calendar.fresh.filter { !watchedMarks.isWatched($0.video.id, metaId: $0.series.id) }
     }
 
     /// Series in My List, the Stremio library and Continue Watching.
@@ -278,7 +288,7 @@ struct HomeScreen: View {
             item.startOver = startOver
             coordinator.play(item)
         } else {
-            path.append(StreamsRoute(video: video, queue: queue))
+            path.append(StreamsRoute(video: video, queue: queue, startOver: startOver))
         }
     }
 
@@ -484,7 +494,9 @@ struct ContinueTile<Actions: View>: View {
     private var subtitle: String {
         let left = max(entry.duration - entry.position, 0)
         let minutes = Int(left / 60)
-        let remaining = minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min left" : "\(minutes) min left"
+        // The next episode, queued when the last one finished, has no length yet.
+        let remaining = entry.duration <= 0 ? "Up next"
+            : minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min left" : "\(minutes) min left"
         if let label = entry.ref.episodeLabel { return "\(label) · \(remaining)" }
         return remaining
     }
@@ -1022,6 +1034,9 @@ struct CatalogGridScreen: View {
     @State private var exhausted = false
     /// How far into a non-Cinemeta source we are (TMDB pages are 20 long whatever was kept).
     @State private var offset = 0
+    /// The list the grid holds, and the one a page is being fetched for.
+    @State private var loadedKey: LoadKey?
+    @State private var loadingKey: LoadKey?
 
     private let columns = [GridItem(.adaptive(minimum: Device.size(104)), spacing: Device.isPad ? 18 : 12)]
 
@@ -1082,6 +1097,10 @@ struct CatalogGridScreen: View {
         .navigationTitle(route.title)
         .navigationBarTitleDisplayMode(.large)
         .task(id: LoadKey(type: type, catalog: catalog)) {
+            // Back from a title: the grid stays as it was (pages loaded, place in it).
+            let key = LoadKey(type: type, catalog: catalog)
+            guard key != loadedKey || items.isEmpty else { return }
+            loadedKey = key
             items = []
             exhausted = false
             offset = 0
@@ -1090,13 +1109,22 @@ struct CatalogGridScreen: View {
     }
 
     private func loadMore() async {
-        guard !loading, !exhausted else { return }
+        let key = LoadKey(type: type, catalog: catalog)
+        guard loadingKey != key, !exhausted else { return }
+        loadingKey = key
         loading = true
-        defer { loading = false }
+        defer {
+            // A page for a list switched away from doesn't end the new list's loading.
+            if loadingKey == key {
+                loadingKey = nil
+                loading = false
+            }
+        }
         let wanted = type
         let list = catalog
         // A TMDB list or an addon catalog pages through its own source; Cinemeta's as before.
         let page: [MetaPreview]
+        var step = 0
         if let routed = route.source {
             // A platform page switches between its movies and its series.
             var source = routed
@@ -1104,11 +1132,13 @@ struct CatalogGridScreen: View {
                 source = .tmdbDiscover(kind: wanted == "series" ? "tv" : "movie", query: query)
             }
             page = await source.load(after: offset, addons: addons.addons)
-            offset += source.needsTMDB ? 20 : page.count
+            step = source.needsTMDB ? 20 : page.count
         } else {
             page = await Cinemeta.catalog(type: wanted, id: list, genre: route.genre, skip: items.count)
         }
-        guard wanted == type, list == catalog else { return }
+        // Cut short, or for a list switched away from: not this grid's page.
+        guard !Task.isCancelled, wanted == type, list == catalog else { return }
+        offset += step
         let known = Set(items.map(\.id))
         let fresh = page.filter { !known.contains($0.id) && $0.poster != nil }
         if fresh.isEmpty { exhausted = true }

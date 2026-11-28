@@ -136,7 +136,8 @@ enum WidgetBridge {
 
     private static func subtitle(_ entry: WatchStore.Entry) -> String {
         let minutes = Int(max(entry.duration - entry.position, 0) / 60)
-        let left = minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min left" : "\(minutes) min left"
+        let left = entry.duration <= 0 ? "Up next"
+            : minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) min left" : "\(minutes) min left"
         if let label = entry.ref.episodeLabel {
             let code = label.split(separator: "·").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? label
             return "\(code) · \(left)"

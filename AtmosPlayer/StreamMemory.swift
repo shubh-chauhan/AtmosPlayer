@@ -92,6 +92,7 @@ enum QuickPlay {
     /// Returns nil when the user should pick from the stream list.
     @MainActor
     static func resolve(video: VideoRef, queue: [VideoRef], addons: AddonStore) async -> PlayItem? {
+        if let saved = downloaded(video, queue: queue) { return saved }
         if let last = LastStreamStore.shared.stream(forTitle: video.metaId) {
             if last.videoId == video.videoId {
                 return item(video: video, queue: queue, stream: last)
@@ -106,6 +107,14 @@ enum QuickPlay {
             }
         }
         return autoPickOn ? await best(video: video, queue: queue, addons: addons) : nil
+    }
+
+    /// The downloaded copy of this movie / episode, which plays offline too.
+    @MainActor
+    static func downloaded(_ video: VideoRef, queue: [VideoRef]) -> PlayItem? {
+        let downloads = DownloadStore.shared
+        guard let saved = downloads.entry(forVideo: video.videoId), let url = downloads.fileURL(saved) else { return nil }
+        return DownloadPlayback.item(saved, url: url, queue: queue)
     }
 
     static let autoPickKey = "streams.autoPickBest"

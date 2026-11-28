@@ -265,7 +265,7 @@ struct MetaDetailView: View {
             if !Task.isCancelled, found != extras { withAnimation(.easeOut(duration: 0.3)) { extras = found } }
         }
         .navigationDestination(item: $streamsRoute) { route in
-            StreamsView(video: route.video, queue: route.queue)
+            StreamsView(video: route.video, queue: route.queue, startOver: route.startOver)
         }
     }
 
@@ -778,7 +778,8 @@ struct MetaDetailView: View {
             }
             orderedVideos = ordered
             seasons = seen
-            addonVideoIds = richer.videos.map(\.id)
+            // addonVideoIds stays the addon's own list: Stremio's watched field is indexed by it,
+            // and anchoring it on an added episode makes Stremio reset the show's marks.
             if !seen.contains(season), let first = seen.first { season = first }
         } else {
             orderedVideos = EpisodeQueue.ordered(richer.videos)

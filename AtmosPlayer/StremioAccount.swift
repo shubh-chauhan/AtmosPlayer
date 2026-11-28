@@ -98,7 +98,7 @@ final class StremioAccount: ObservableObject {
                 .map { MetaRef(id: $0.id, type: $0.type, name: $0.name, poster: $0.poster) }
             library = saved
             DiskStore.save(saved, libraryKey)
-            watch.mergeFromStremio(items.map(\.watchSnapshot))
+            watch.mergeFromStremio(items.map(\.watchSnapshot), dropsCleared: pushProgressEnabled)
             // Watched movies and episodes (the ✓ marks).
             for item in items where item.type == "movie" || item.type == "series" {
                 WatchedStore.shared.adoptRemote(metaId: item.id, type: item.type, field: item.watchedField,
@@ -155,8 +155,11 @@ final class StremioAccount: ObservableObject {
     }
 
     /// Sends a title's watched movies / episodes to Stremio (what its "Mark as watched" does).
-    /// `videoIds` is the series' episode list in the addon's order; fetched from Cinemeta if nil.
-    func pushWatched(metaId: String, type: String, watched: Set<String>, videoIds: [String]?) async {
+    /// `videoIds` is the series' episode list in the addon's order; from the saved details, else
+    /// Cinemeta, if nil. With `change`, only that change is applied to Stremio's current marks, so
+    /// marks made in other Stremio apps (not yet seen here) are kept.
+    func pushWatched(metaId: String, type: String, watched: Set<String>, videoIds: [String]?,
+                     change: (ids: [String], on: Bool)? = nil) async {
         guard let key = authKey else { return }
         let op = PendingWrites.Op.stremioWatched(metaId: metaId, type: type, watched: Array(watched), videoIds: videoIds)
         await serialized {
@@ -165,6 +168,10 @@ final class StremioAccount: ObservableObject {
                                                          ["authKey": key, "collection": "libraryItem", "ids": [metaId], "all": false])
                 var item = (existing as? [Any])?.first as? [String: Any]
                 var ids = videoIds
+                if type == "series", ids == nil {
+                    // Addon titles (anime) aren't on Cinemeta; their page's saved details list them.
+                    ids = await MetaResolver.savedVideoIds(type: type, id: metaId)
+                }
                 if item == nil || (type == "series" && ids == nil) {
                     let meta = await Cinemeta.meta(type: type, id: metaId)
                     if ids == nil { ids = meta?.videos.map(\.id) }
@@ -183,7 +190,17 @@ final class StremioAccount: ObservableObject {
                     "watched": "", "noNotif": false, "timeOffset": 0, "duration": 0,
                 ]
                 if type == "series" {
-                    guard let ids, let field = WatchedBitfield.encode(watched, videoIds: ids) else { return }
+                    guard let ids else {
+                        // No episode list yet: kept and sent again on a later sync.
+                        PendingWrites.shared.add(op)
+                        return
+                    }
+                    var marks = watched
+                    if let change, let theirs = state["watched"] as? String, !theirs.isEmpty {
+                        let remote = WatchedBitfield.decode(theirs, videoIds: ids).union(watched)
+                        marks = change.on ? remote : remote.subtracting(change.ids)
+                    }
+                    guard let field = WatchedBitfield.encode(marks, videoIds: ids) else { return }
                     state["watched"] = field
                 } else {
                     let on = watched.contains(metaId)
@@ -268,7 +285,7 @@ final class StremioAccount: ObservableObject {
 }
 
 /// The parts of a Stremio library item the app uses.
-private struct LibraryItem {
+struct LibraryItem {
     let id: String
     let type: String
     let name: String
@@ -311,19 +328,23 @@ private struct LibraryItem {
         let video = videoId ?? id
         return WatchStore.StremioSnapshot(
             ref: VideoRef(type: type, metaId: id, videoId: video, name: name, poster: poster,
-                          episodeLabel: Self.episodeLabel(video)),
+                          episodeLabel: Self.episodeLabel(video, metaId: id)),
             position: offset, duration: duration,
             updated: lastWatched ?? modified, modified: modified,
             continueWatching: inContinueWatching)
     }
 
-    /// "tt123:2:5" → "S2E5".
-    static func episodeLabel(_ videoId: String) -> String? {
-        let parts = videoId.split(separator: ":")
-        guard parts.count >= 3, let season = Int(parts[parts.count - 2]), let episode = Int(parts[parts.count - 1]) else {
-            return nil
+    /// "tt123:2:5" → "S2E5"; "kitsu:1376:5" → "E5". Only what follows the title's own id is
+    /// read, so a number inside the id (Kitsu's 1376) is never taken for a season.
+    static func episodeLabel(_ videoId: String, metaId: String) -> String? {
+        guard videoId.hasPrefix(metaId + ":") else { return nil }
+        let numbers = videoId.dropFirst(metaId.count + 1).split(separator: ":").map { Int($0) }
+        switch numbers.count {
+        case 2: if let season = numbers[0], let episode = numbers[1] { return "S\(season)E\(episode)" }
+        case 1: if let episode = numbers[0] { return "E\(episode)" }
+        default: break
         }
-        return "S\(season)E\(episode)"
+        return nil
     }
 }
 

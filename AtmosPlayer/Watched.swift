@@ -95,7 +95,9 @@ final class WatchedStore: ObservableObject {
 
     @Published private(set) var records: [String: Record] = [:]
     /// Set by the app: sends a title's watched state to Stremio.
-    var onChange: ((_ metaId: String, _ type: String, _ watched: Set<String>, _ videoIds: [String]?) -> Void)?
+    /// `changed`/`on` is what this change did, so Stremio's own marks are kept around it.
+    var onChange: ((_ metaId: String, _ type: String, _ watched: Set<String>, _ videoIds: [String]?,
+                    _ changed: [String], _ on: Bool) -> Void)?
     /// Set by the app: marks changed by hand (not by finishing playback, which Trakt's
     /// scrobble already records), for Trakt's history.
     var onMarkByHand: ((_ metaId: String, _ type: String, _ ids: [String], _ watched: Bool) -> Void)?
@@ -126,7 +128,7 @@ final class WatchedStore: ObservableObject {
         record.changed = Date()
         records[metaId] = record
         save()
-        onChange?(metaId, type, record.videos, videoIds)
+        onChange?(metaId, type, record.videos, videoIds, ids, watched)
         if byHand { onMarkByHand?(metaId, type, ids, watched) }
     }
 
@@ -170,7 +172,10 @@ final class WatchedStore: ObservableObject {
     func reconcile(metaId: String, videoIds: [String]) {
         guard var record = records[metaId], let field = record.remoteField,
               record.remoteChanged > record.changed else { return }
+        // Marks for episodes this list doesn't have (added from TMDB or TVmaze) can't be in
+        // Stremio's copy, so they're kept rather than wiped.
         record.videos = WatchedBitfield.decode(field, videoIds: videoIds).union(record.trakt ?? [])
+            .union(record.videos.subtracting(videoIds))
         record.changed = record.remoteChanged
         records[metaId] = record
         save()

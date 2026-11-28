@@ -153,6 +153,10 @@ enum SelfCheck {
         expect(extras.textlessBackdrop == TMDB.imageBase + "w1280/t.jpg", "textless backdrop is the no-language one")
         expect(extras.heroArt(portrait: true) == TMDB.imageBase + "original/tp.jpg"
                && extras.heroArt(portrait: false) == extras.textlessBackdrop, "portrait frames get the textless poster")
+        expect(LibraryItem.episodeLabel("tt1:2:5", metaId: "tt1") == "S2E5"
+               && LibraryItem.episodeLabel("kitsu:1376:5", metaId: "kitsu:1376") == "E5"
+               && LibraryItem.episodeLabel("tt1", metaId: "tt1") == nil,
+               "episode labels read only what follows the title id")
         var titled = extras
         titled.textlessPoster = nil
         titled.poster = TMDB.imageBase + "w780/p.jpg"

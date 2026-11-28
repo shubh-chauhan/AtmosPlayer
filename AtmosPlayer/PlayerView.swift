@@ -61,6 +61,8 @@ struct PlayerView: View {
     /// One quiet retry per item when a stream fails mid-playback (a dropped connection,
     /// a debrid link that expired), resuming where it stopped.
     @State private var retriedItemId: UUID?
+    /// Where the next load starts instead of the saved place: a retry, or a replay after the end.
+    @State private var startAt: Double?
     /// Pictures for the timeline while scrubbing. Kept here, not in the timeline, which goes
     /// away each time the controls hide.
     @State private var stills = ScrubStillSource()
@@ -211,20 +213,23 @@ struct PlayerView: View {
             scheduleHide()
         }
         .onDisappear {
-            recordProgress(push: true)
-            PlayerBrightness.shared.leave()
             hideTask?.cancel()
             countdownTask?.cancel()
             sleepTask?.cancel()
             torrent.stop()
-            pip.stop()
             let stills = stills
             Task { await stills.reset() }
+            if item.securityScoped { item.url.stopAccessingSecurityScopedResource() }
+            // Replaced by another title (the widget, Siri or a link while this one was open): the
+            // engine, screen and orientation now belong to the new player, so they're left alone.
+            guard coordinator.current == nil else { return }
+            recordProgress(push: true)
+            PlayerBrightness.shared.leave()
+            pip.stop()
             PlaybackRemote.shared.detach()
             engine.stop()
             UIApplication.shared.isIdleTimerDisabled = false
             OrientationLock.set(AppDelegate.defaultMask)
-            if item.securityScoped { item.url.stopAccessingSecurityScopedResource() }
         }
         .onChange(of: scenePhase) { old, phase in
             if old == .active {
@@ -239,6 +244,7 @@ struct PlayerView: View {
             if phase == .active { Task { await restoreAfterBackground(play: playingWhenLeft) } }
         }
         .onChange(of: status.state) { _, state in
+            if state == .paused, scenePhase != .active, !engine.needsForegroundVideoRestore { playingWhenLeft = false }
             if case .error(let message) = state {
                 handlePlaybackFailure(message)
                 return
@@ -454,7 +460,9 @@ struct PlayerView: View {
     private func togglePlayback() {
         let play = !showsPlaying
         withAnimation(.snappy(duration: 0.22)) { playIntent = play }
-        if engine.needsForegroundVideoRestore {
+        if status.state == .ended {
+            replay(at: 0)
+        } else if engine.needsForegroundVideoRestore {
             Task { await restoreAfterBackground(play: true) }
         } else if play {
             engine.play()
@@ -544,7 +552,8 @@ struct PlayerView: View {
             }
             ScrubBar(engine: engine, clock: engine.clock, stills: stills, url: item.url, headers: item.headers,
                      scrubbing: $scrubbing,
-                     showRemaining: $showRemaining) { scheduleHide() }
+                     showRemaining: $showRemaining,
+                     onReplay: { replay(at: $0) }) { scheduleHide() }
         }
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(SubtitleOverlay.space)).minY } action: { bottomTop = $0 }
     }
@@ -635,7 +644,9 @@ struct PlayerView: View {
         sleepTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(minutes) * 60 * 1_000_000_000)
             guard !Task.isCancelled else { return }
-            if engine.state == .playing { engine.togglePlayPause() }
+            engine.pause()
+            countdownTask?.cancel()
+            if case .countdown = nextState { nextState = .idle }
             sleepChoice = nil
             withAnimation(.easeInOut(duration: 0.2)) { showControls = true }
         }
@@ -650,6 +661,8 @@ struct PlayerView: View {
         countdownTask = Task { @MainActor in
             while case .countdown(let left) = nextState, !Task.isCancelled {
                 if left <= 0 {
+                    // Not cancelled by playNext: its stream lookups run inside this task.
+                    countdownTask = nil
                     await playNext()
                     return
                 }
@@ -677,6 +690,9 @@ struct PlayerView: View {
             nextState = .idle
             onlineSubtitles = []
             addedSubtitleURLs = [:]
+            startAt = nil
+            let stills = stills
+            Task { await stills.reset() }
             item = next
         } else {
             nextState = .failed
@@ -688,6 +704,7 @@ struct PlayerView: View {
     private func handlePlaybackFailure(_ message: String) {
         // Keep the place first, so a retry (automatic or Try Again) resumes there.
         recordProgress(push: false)
+        if engine.clock.currentTime > 0 { startAt = engine.clock.currentTime }
         if retriedItemId != item.id, hasStarted || engine.clock.currentTime > 0 {
             retriedItemId = item.id
             let failedId = item.id
@@ -703,6 +720,8 @@ struct PlayerView: View {
 
     private func load() async {
         loadError = nil
+        // The engine numbers added subtitles afresh on every load (5: a retry left them dead).
+        addedSubtitleURLs = [:]
         torrent.watch(item.stream)
         let loadingId = item.id
         var options = LoadOptions()
@@ -720,8 +739,10 @@ struct PlayerView: View {
         if let peak = VideoPreferences.toneMapPeak {
             options.videoProcessing = VideoProcessingOptions(targetPeakNits: peak)
         }
-        let resume = item.startOver ? nil
-            : item.watch.flatMap { watch.resumePosition(for: $0.videoId) }.flatMap { $0 > 0 ? $0 : nil }
+        let override = startAt
+        startAt = nil
+        let resume = override ?? (item.startOver ? nil
+            : item.watch.flatMap { watch.resumePosition(for: $0.videoId) }.flatMap { $0 > 0 ? $0 : nil })
 
         var info: [String: Any] = [MPMediaItemPropertyTitle: item.watch?.episodeLabel ?? item.displayTitle]
         if let name = item.watch?.name, item.watch?.episodeLabel != nil {
@@ -813,9 +834,21 @@ struct PlayerView: View {
         coordinator.current = nil
     }
 
+    /// The engine can't seek or play once a title has ended: it's opened again at `seconds`.
+    private func replay(at seconds: Double) {
+        countdownTask?.cancel()
+        nextState = .idle
+        startAt = max(seconds, 0)
+        Task { await load() }
+    }
+
     private func skip(_ delta: Double, flash: Bool) {
         var target = max(engine.clock.currentTime + delta, 0)
         if engine.duration > 0 { target = min(target, max(engine.duration - 1, 0)) }
+        if status.state == .ended {
+            replay(at: target)
+            return
+        }
         Task {
             await engine.seek(to: target)
             PlaybackRemote.shared.refresh()
@@ -1180,6 +1213,8 @@ struct ScrubBar: View {
     let headers: [String: String]
     @Binding var scrubbing: Bool
     @Binding var showRemaining: Bool
+    /// Scrubbing after the end: the title is opened again at that time (the engine can't seek there).
+    var onReplay: ((Double) -> Void)? = nil
     let onInteraction: () -> Void
 
     @State private var dragTime: Double?
@@ -1232,7 +1267,10 @@ struct ScrubBar: View {
                             startStills()
                         }
                         .onEnded { _ in
-                            if let target = dragTime {
+                            if let target = dragTime, engine.state == .ended, let onReplay {
+                                onReplay(target)
+                                dragTime = nil
+                            } else if let target = dragTime {
                                 Task {
                                     await engine.seek(to: target)
                                     // A newer drag may have started meanwhile; leave its time alone.

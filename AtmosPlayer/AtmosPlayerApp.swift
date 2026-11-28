@@ -75,8 +75,9 @@ struct AtmosPlayerApp: App {
                     watch.onRemove = { ref in
                         Task { await account.clearProgress(ref) }
                     }
-                    WatchedStore.shared.onChange = { metaId, type, watched, videoIds in
-                        Task { await account.pushWatched(metaId: metaId, type: type, watched: watched, videoIds: videoIds) }
+                    WatchedStore.shared.onChange = { metaId, type, watched, videoIds, changed, on in
+                        Task { await account.pushWatched(metaId: metaId, type: type, watched: watched, videoIds: videoIds,
+                                                         change: (ids: changed, on: on)) }
                     }
                     WatchedStore.shared.onMarkByHand = { metaId, type, ids, on in
                         Task { await TraktAccount.shared.pushHistory(metaId: metaId, type: type, videoIds: ids, add: on) }

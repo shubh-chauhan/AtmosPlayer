@@ -366,9 +366,10 @@ final class HomeFeed: ObservableObject {
         guard let watched, watched.ref.metaId.hasPrefix("tt") else { return }
         let ref = watched.ref
         guard suggestionFor != ref.metaId else { return }
-        suggestionFor = ref.metaId
         let type = ref.type == "series" ? "series" : "movie"
+        // Remembered only once answered, so a failed fetch is tried again.
         guard let meta = await Cinemeta.meta(type: type, id: ref.metaId) else { return }
+        suggestionFor = ref.metaId
         let genres = meta.genres
         guard let genre = genres.first(where: { $0 != "Drama" }) ?? genres.first else { return }
         let items = await Cinemeta.catalog(type: type, id: "top", genre: genre)

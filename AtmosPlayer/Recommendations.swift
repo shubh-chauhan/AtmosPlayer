@@ -172,7 +172,8 @@ enum TasteSignals {
             sums[id] = sum
         }
         for (metaId, record) in records where !record.videos.isEmpty {
-            let series = record.videos.contains { $0.contains(":") }
+            // An episode id is the title's id plus more ("kitsu:N" alone is an anime film).
+            let series = record.videos.contains { $0 != metaId && $0.contains(":") }
             let at = record.changed == .distantPast ? now.addingTimeInterval(-180 * 86400) : record.changed
             add(metaId, series ? "series" : "movie", "", series ? 2 + Double(min(record.videos.count, 10)) * 0.2 : 3, at)
         }
@@ -391,7 +392,7 @@ final class Recommender: ObservableObject {
             bySeed[seed.metaId] = await Self.related(seed.metaId, "recommendations")
         }
         var fromFavorites: [Candidate] = []
-        for ref in favorites.items.prefix(3) where ref.id.hasPrefix("tt") {
+        for ref in favorites.items.prefix(3) where MetaResolver.mappable(ref.id) {
             fromFavorites += await Self.related(ref.id, "similar")
         }
         let top = profile.topGenres(2)
@@ -487,9 +488,9 @@ final class Recommender: ObservableObject {
         return found.keys.sorted().compactMap { found[$0] }
     }
 
-    /// TMDB's "recommendations" or "similar" for one of your titles, tagged with it.
+    /// TMDB's "recommendations" or "similar" for one of your titles (IMDb or Kitsu id), tagged with it.
     private static func related(_ imdb: String, _ list: String) async -> [Candidate] {
-        guard let ref = await TMDB.find(imdb: imdb) else { return [] }
+        guard let ref = await MetaResolver.tmdbRef(for: imdb) else { return [] }
         let kind = ref.kind.rawValue
         return await TMDBCatalog.candidates("/\(kind)/\(ref.id)/\(list)", [:], page: 1, kind: kind)
             .map { var c = $0; c.seeds = [imdb]; return c }
@@ -498,7 +499,7 @@ final class Recommender: ObservableObject {
     /// "More Like This" on a title page: TMDB's recommendations and similar titles, ranked for
     /// you, leaving out what you've seen. Empty without TMDB (the page then uses Cinemeta's).
     func similar(to meta: StremioMeta) async -> [MetaPreview] {
-        guard TMDB.isConfigured, meta.id.hasPrefix("tt") else { return [] }
+        guard TMDB.isConfigured, MetaResolver.mappable(meta.id) else { return [] }
         async let recommended = Self.related(meta.id, "recommendations")
         async let similar = Self.related(meta.id, "similar")
         let pool = await recommended + similar

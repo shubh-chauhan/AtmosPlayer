@@ -281,7 +281,19 @@ final class TraktAccount: ObservableObject {
         return (data, code)
     }
 
+    /// The refresh under way: concurrent calls wait for it instead of spending the refresh
+    /// token twice (the second use is refused, which would sign you out).
+    private var refreshing: Task<Void, Never>?
+
     private func refreshTokens() async {
+        if let refreshing { return await refreshing.value }
+        let task = Task { await performRefresh() }
+        refreshing = task
+        await task.value
+        refreshing = nil
+    }
+
+    private func performRefresh() async {
         guard let refresh = tokens?.refresh, let clientId = TraktConfig.clientId else { return }
         var body = ["refresh_token": refresh, "client_id": clientId, "grant_type": "refresh_token"]
         if let secret = TraktConfig.clientSecret {
@@ -293,7 +305,7 @@ final class TraktAccount: ObservableObject {
         guard let reply = try? await send("POST", "/oauth/token", body: body, auth: false) else { return }
         if reply.1 == 200 {
             store(tokensFrom: reply.0)
-        } else if reply.1 == 400 || reply.1 == 401 {
+        } else if reply.1 == 400 || reply.1 == 401, tokens?.refresh == refresh {
             // The refresh token was revoked: sign in again.
             lastError = "Your Trakt sign-in expired. Connect again."
             tokens = nil

@@ -24,6 +24,8 @@ struct VideoRef: Hashable, Codable {
 struct StreamsRoute: Hashable {
     let video: VideoRef
     var queue: [VideoRef] = []
+    /// "Play from Beginning": the stream picked starts at 0:00.
+    var startOver = false
 }
 
 /// A title shown in Home / Search, opened into its detail page.
@@ -219,7 +221,8 @@ final class WatchStore: ObservableObject {
 
     /// Merges Stremio's Continue Watching: whichever side was watched more recently wins, and
     /// a title cleared in Stremio after it was last watched here leaves the list. One entry per title.
-    func mergeFromStremio(_ snapshots: [StremioSnapshot]) {
+    /// `dropsCleared` is off when progress isn't sent to Stremio: its empty progress then says nothing.
+    func mergeFromStremio(_ snapshots: [StremioSnapshot], dropsCleared: Bool = true) {
         var byTitle: [String: Entry] = [:]
         for entry in entries {
             if let existing = byTitle[entry.ref.metaId], existing.updated >= entry.updated { continue }
@@ -235,7 +238,7 @@ final class WatchStore: ObservableObject {
                     byTitle[snapshot.ref.metaId] = Entry(ref: ref, position: snapshot.position,
                                                          duration: snapshot.duration, updated: snapshot.updated)
                 }
-            } else if let local, local.position > 0, snapshot.modified > local.updated + 60 {
+            } else if dropsCleared, let local, local.position > 0, snapshot.modified > local.updated + 60 {
                 byTitle[snapshot.ref.metaId] = nil
             }
         }

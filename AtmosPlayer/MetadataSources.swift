@@ -480,6 +480,12 @@ enum MetaResolver {
         return await resolve(ref, addons: [])?.trailerId
     }
 
+    /// A title's episode ids from its saved details (addon metas included), if it was opened before.
+    static func savedVideoIds(type: String, id: String) async -> [String]? {
+        let ids = await MetaCache.entry(key(MetaRef(id: id, type: type, name: "", poster: nil)))?.meta.videos.map(\.id)
+        return ids?.isEmpty == false ? ids : nil
+    }
+
     /// The hero picture decided for a title, if it has been: shown in the first frame.
     static func decidedHeroArt(_ ref: MetaRef, portrait: Bool) -> String? {
         heroMemo["\(key(ref))/\(portrait)"]

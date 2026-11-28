@@ -68,8 +68,8 @@ final class PendingWrites {
             case .stremioWatched(let metaId, _, _, _): return "sw/\(metaId)"
             case .stremioClear(let ref): return "sc/\(ref.metaId)"
             case .traktScrobble(let ref, _, _): return "ts/\(ref.videoId)"
-            case .traktHistory(let metaId, _, let ids, let add, _):
-                return "th/\(metaId)/\(add)/\(ids.sorted().joined(separator: ","))"
+            case .traktHistory(let metaId, _, let ids, _, _):
+                return "th/\(metaId)/\(ids.sorted().joined(separator: ","))"
             }
         }
 
