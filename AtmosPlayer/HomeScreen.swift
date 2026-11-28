@@ -540,6 +540,8 @@ struct HeroCarousel: View {
     @State private var appeared = true
     /// Trailer sound, like the TV app's speaker button. Muted again whenever Home leaves the screen.
     @State private var trailerMuted = true
+    /// Trailers looked up for pages whose catalog listed none (titles from TMDB lists), by title id.
+    @State private var trailers: [String: String] = [:]
 
     private let interval: Double = 7
 
@@ -570,6 +572,7 @@ struct HeroCarousel: View {
                 ForEach(items) { item in
                     if item.id == activeId {
                         HeroCard(item: item, wide: wide, active: true, sideInset: sideInset,
+                                 trailerId: trailer(item),
                                  previewing: !paused && onScreen && appeared,
                                  muted: trailerMuted,
                                  stretch: pull.stretch,
@@ -644,14 +647,18 @@ struct HeroCarousel: View {
         .onChange(of: items.map(\.id)) { _, ids in
             if let current, !ids.contains(current) { self.current = nil }
         }
-        // The pages either side are decoded before you swipe to them.
+        // This page's trailer is found if its catalog had none, and the pages either side are
+        // decoded (and their trailers found) before you swipe to them.
         .task(id: activeId) {
-            guard let index = items.firstIndex(where: { $0.id == activeId }), items.count > 1 else { return }
+            guard let index = items.firstIndex(where: { $0.id == activeId }) else { return }
+            await findTrailer(items[index])
+            guard items.count > 1 else { return }
             for neighbour in [items[(index + 1) % items.count], items[(index + items.count - 1) % items.count]] {
                 _ = await MetaResolver.heroArt(for: MetaRef(neighbour), portrait: !wide,
                                                fallbacks: ArtworkURL.heroFallbacks(id: neighbour.id, background: neighbour.background,
                                                                                    poster: neighbour.poster, portrait: !wide),
                                                maxPixel: 1800)
+                await findTrailer(neighbour)
             }
         }
         // Auto-advance. Restarts when the page changes, after a swipe, and pauses while
@@ -672,13 +679,30 @@ struct HeroCarousel: View {
                 try? await Task.sleep(nanoseconds: 60_000_000)
                 guard !Task.isCancelled else { return }
             }
-            let duration = trailerShowing ? trailerInterval : interval
+            // A page with a trailer waits a little longer, so the trailer has time to start.
+            let hasTrailer = activeItem.flatMap { trailer($0) } != nil && TrailerPreviews.enabled && TrailerPreviews.allowed
+            let duration = trailerShowing ? trailerInterval : hasTrailer ? trailerWait : interval
             withAnimation(.linear(duration: duration)) { fill = 1 }
             try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
             let index = items.firstIndex { $0.id == activeId } ?? 0
             withAnimation(.easeInOut(duration: 0.7)) { current = items[(index + 1) % items.count].id }
         }
+    }
+
+    /// How long a page with a trailer waits for it to start before moving on.
+    private let trailerWait: Double = 11
+
+    private var activeItem: MetaPreview? { items.first { $0.id == activeId } }
+
+    /// The page's trailer: its catalog's, else one looked up.
+    private func trailer(_ item: MetaPreview) -> String? { item.trailerId ?? trailers[item.id] }
+
+    /// Looks up the trailer for a page whose catalog listed none (TMDB lists never do).
+    private func findTrailer(_ item: MetaPreview) async {
+        guard item.trailerId == nil, trailers[item.id] == nil, TrailerPreviews.enabled, TrailerPreviews.allowed,
+              let found = await MetaResolver.trailer(for: MetaRef(item)), !Task.isCancelled else { return }
+        trailers[item.id] = found
     }
 
     /// The next (1) or previous (-1) page, dissolving in.
@@ -733,6 +757,8 @@ struct HeroCard: View {
     var wide = false
     var active = true
     var sideInset: CGFloat = 0
+    /// The trailer to preview when the catalog entry has none (looked up by the carousel).
+    var trailerId: String?
     /// Rested on and visible: its trailer may play.
     var previewing = false
     /// Trailer sound off (the carousel's speaker button).
@@ -769,7 +795,7 @@ struct HeroCard: View {
                                        value: active && pushedIn)
                     }
                     .overlay {
-                        TrailerBackdrop(youtubeId: item.trailerId, active: previewing, muted: muted, onShowing: onTrailer)
+                        TrailerBackdrop(youtubeId: trailerId ?? item.trailerId, active: previewing, muted: muted, onShowing: onTrailer)
                     }
                     .clipped()
 

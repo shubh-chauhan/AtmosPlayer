@@ -473,6 +473,13 @@ enum MetaResolver {
         _ = await extras(for: ref)
     }
 
+    /// The title's YouTube trailer, from its full details: catalogs built from TMDB lists carry
+    /// none, so their titles look it up here (saved with the title, so once per title).
+    static func trailer(for ref: MetaRef) async -> String? {
+        guard mappable(ref.id) else { return nil }
+        return await resolve(ref, addons: [])?.trailerId
+    }
+
     /// The hero picture decided for a title, if it has been: shown in the first frame.
     static func decidedHeroArt(_ ref: MetaRef, portrait: Bool) -> String? {
         heroMemo["\(key(ref))/\(portrait)"]
