@@ -345,19 +345,30 @@ jobs:
             xcrun simctl ui "$PAD" appearance dark
             xcrun simctl install "$PAD" build/Build/Products/Debug-iphonesimulator/AtmosPlayer.app
             padshot() {
-              screen=$1; wait=$2
+              screen=$1; wait=$2; name=${3:-$1}
               xcrun simctl terminate "$PAD" com.atmosplayer.app 2>/dev/null || true
               xcrun simctl launch "$PAD" com.atmosplayer.app -previewScreen "$screen"
               sleep "$wait"
-              xcrun simctl io "$PAD" screenshot "shots/ipad-$screen.png"
+              xcrun simctl io "$PAD" screenshot "shots/ipad-$name.png"
             }
             padshot home 22
             padshot detail 22
             padshot stremio 8
             padshot search 8
+            padshot player 7
+            # iPad apps can't force their own rotation, so the Simulator window is turned instead
+            # (Device > Rotate Right). Needs UI scripting; without it the shots stay portrait.
+            rotate() {
+              osascript -e "tell application \"System Events\" to tell process \"Simulator\" to click menu item \"$1\" of menu 1 of menu bar item \"Device\" of menu bar 1"                 || echo "::warning::could not rotate the iPad simulator ($1)"
+            }
+            open -a Simulator --args -CurrentDeviceUDID "$PAD" || true
+            sleep 10
+            rotate "Rotate Right"
+            sleep 3
             padshot home-landscape 22
             padshot detail-landscape 22
-            padshot player 12
+            padshot player 7 player-landscape
+            rotate "Rotate Left"
             xcrun simctl terminate "$PAD" com.atmosplayer.app 2>/dev/null || true
           fi
           ls -l shots

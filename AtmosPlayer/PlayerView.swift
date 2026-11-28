@@ -17,6 +17,10 @@ struct PlayerView: View {
     /// Set while the player fades out, so a second tap can't close twice.
     @State private var closing = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var widthClass
+    /// A full-width iPad window: controls are sized up. Not in a narrow Split View window, and
+    /// never on an iPhone (a Max in landscape is regular width too).
+    private var bigScreen: Bool { Device.isPad && widthClass == .regular }
 
     /// The item playing now. Starts as the one we were opened with; "Next episode" replaces it.
     @State private var item: PlayItem
@@ -428,9 +432,9 @@ struct PlayerView: View {
                 bottomArea
             }
             // iPad: controls sit in from the edges, the way a big screen's do.
-            .padding(.horizontal, Device.isPad ? 40 : 24)
-            .padding(.top, Device.isPad ? 20 : 12)
-            .padding(.bottom, Device.isPad ? 20 : 8)
+            .padding(.horizontal, bigScreen ? 40 : 24)
+            .padding(.top, bigScreen ? 20 : 12)
+            .padding(.bottom, bigScreen ? 20 : 8)
         }
         .foregroundStyle(.white)
         .tint(.white)
@@ -481,7 +485,7 @@ struct PlayerView: View {
     }
 
     private var centerTransport: some View {
-        let k = Device.controlScale
+        let k = bigScreen ? Device.controlScale : 1
         return HStack(spacing: 70 * k) {
             Button { skip(-skipSeconds, flash: false) } label: {
                 Image(systemName: skipSymbol(back: true))
@@ -521,13 +525,13 @@ struct PlayerView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if let episode = item.watch?.episodeLabel {
                         Text(episode)
-                            .font(Device.isPad ? .headline : .subheadline.weight(.semibold))
+                            .font(bigScreen ? .headline : .subheadline.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.7))
                             .lineLimit(1)
                     }
                     HStack(spacing: 8) {
                         Text(item.watch?.name ?? item.displayTitle)
-                            .font(Device.isPad ? .title2.weight(.bold) : .title3.weight(.bold))
+                            .font(bigScreen ? .title2.weight(.bold) : .title3.weight(.bold))
                             .lineLimit(1)
                         if let badge = status.formatBadge {
                             Text(badge.text)
