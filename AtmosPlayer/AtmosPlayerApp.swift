@@ -99,6 +99,8 @@ struct AtmosPlayerApp: App {
 }
 
 struct RootView: View {
+    /// The window's real width class, handed back to each tab's screens (see `tabs`).
+    @Environment(\.horizontalSizeClass) private var horizontalSize
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var history: HistoryStore
     @EnvironmentObject private var watch: WatchStore
@@ -172,23 +174,25 @@ struct RootView: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             Tab("Home", systemImage: "play.tv.fill", value: 0) {
-                HomeScreen()
+                HomeScreen().environment(\.horizontalSizeClass, horizontalSize)
             }
             Tab("Links", systemImage: "link", value: 1) {
-                HomeView()
+                HomeView().environment(\.horizontalSizeClass, horizontalSize)
             }
             Tab("Stremio", systemImage: "puzzlepiece.extension.fill", value: 2) {
-                AddonsView()
+                AddonsView().environment(\.horizontalSizeClass, horizontalSize)
             }
             Tab("Settings", systemImage: "gearshape.fill", value: 4) {
-                AppSettingsView()
+                AppSettingsView().environment(\.horizontalSizeClass, horizontalSize)
             }
             Tab(value: 3, role: .search) {
-                SearchScreen()
+                SearchScreen().environment(\.horizontalSizeClass, horizontalSize)
             }
         }
-        // iPad: the tab bar at the top can open into a sidebar, as in the TV app. iPhone: unchanged.
-        .tabViewStyle(.sidebarAdaptable)
+        // iPad: the tab bar at the bottom like on iPhone, in both orientations (iPadOS puts a
+        // regular-width tab bar at the top). The screens inside get the real width class back
+        // above, so their iPad layouts stay.
+        .environment(\.horizontalSizeClass, .compact)
         .task {
             // CI screenshots only: turn to landscape for the "-landscape" screens.
             if PreviewMode.screen?.hasSuffix("-landscape") == true {
