@@ -206,9 +206,10 @@ jobs:
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" source
 
   preview:
-    name: Simulator screenshots
-    # Runs the app in the iOS Simulator and screenshots the main screens, so a build can be
-    # looked at before it's sideloaded. Pushed to the `previews` branch (raw files are public).
+    name: Simulator self-check
+    # Every build: runs the app's self-check in the iOS Simulator. Screenshots of the main
+    # screens (pushed to the `previews` branch) only when the workflow is run by hand
+    # (Actions > Build unsigned IPA > Run workflow).
     runs-on: xcode-27
     timeout-minutes: 65
     permissions:
@@ -276,7 +277,7 @@ jobs:
             TRAKT_CLIENT_SECRET="$TRAKT_SECRET_SCRAMBLED" \
             MDBLIST_KEY="$MDBLIST_SCRAMBLED"
 
-      - name: Screenshot screens
+      - name: Run the self-check
         run: |
           UDID=$(xcrun simctl list devices available -j | python3 -c '
           import json, sys
@@ -287,6 +288,18 @@ jobs:
           echo "Simulator: $UDID"
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/AtmosPlayer.app
+          # Judged in its own step below. The simulator stays booted for the screenshots: re-booting
+          # one after shutdown hangs on this runner.
+          xcrun simctl launch --console-pty --terminate-running-process "$UDID" com.atmosplayer.app -selfCheck YES > selfcheck.log 2>&1 &
+          for i in $(seq 1 30); do grep -q "SELFCHECK" selfcheck.log && break; sleep 2; done
+          sleep 2
+          xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Screenshot screens
+        if: github.event_name == 'workflow_dispatch'
+        run: |
           xcrun simctl ui "$UDID" appearance dark
           xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4
           xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/AtmosPlayer.app
@@ -317,12 +330,6 @@ jobs:
           xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
           sleep 4
           xcrun simctl io "$UDID" screenshot shots/springboard.png
-          # The self-check (judged in its own step below; a booted simulator, since re-booting
-          # one after shutdown hangs on this runner).
-          xcrun simctl launch --console-pty --terminate-running-process "$UDID" com.atmosplayer.app -selfCheck YES > selfcheck.log 2>&1 &
-          for i in $(seq 1 30); do grep -q "SELFCHECK" selfcheck.log && break; sleep 2; done
-          sleep 2
-          xcrun simctl terminate "$UDID" com.atmosplayer.app 2>/dev/null || true
           xcrun simctl shutdown "$UDID" || true
           # The same screens on an iPad.
           PAD=$(xcrun simctl list devices available -j | python3 -c '
@@ -356,7 +363,7 @@ jobs:
           ls -l shots
 
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && github.event_name == 'workflow_dispatch'
         with:
           name: preview-screenshots
           path: shots
@@ -364,17 +371,20 @@ jobs:
 
       - name: Package the simulator app
         # For running the app in a browser (appetize.io: upload this zip, it runs in an iPhone simulator).
+        if: github.event_name == 'workflow_dispatch'
         run: |
           cd build/Build/Products/Debug-iphonesimulator
           ditto -c -k --sequesterRsrc --keepParent AtmosPlayer.app "$GITHUB_WORKSPACE/AtmosPlayer-simulator.zip"
 
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
         with:
           name: AtmosPlayer-simulator-app
           path: AtmosPlayer-simulator.zip
           if-no-files-found: warn
 
       - name: Publish to the previews branch
+        if: github.event_name == 'workflow_dispatch'
         run: |
           cd shots
           git init -q -b previews
@@ -388,7 +398,7 @@ jobs:
       - name: Self-check
         # Pure-logic checks built into Debug builds (AtmosPlayer/SelfCheck.swift): the app runs
         # them when launched with -selfCheck, prints SELFCHECK PASS / FAIL lines and quits. The
-        # screenshot step runs it; this judges its output.
+        # step above runs it; this judges its output.
         run: |
           grep SELFCHECK selfcheck.log || true
           grep "SELFCHECK FAIL" selfcheck.log | while IFS= read -r line; do echo "::error::$line"; done
