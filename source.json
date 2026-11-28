@@ -1,0 +1,41 @@
+{
+  "name": "Atmos Player",
+  "identifier": "com.atmosplayer.source",
+  "subtitle": "Builds of Atmos Player",
+  "iconURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/icon.png",
+  "sourceURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/source.json",
+  "apps": [
+    {
+      "name": "Atmos Player",
+      "bundleIdentifier": "com.atmosplayer.app",
+      "developerName": "shubh-chauhan",
+      "subtitle": "Atmos and Dolby Vision player",
+      "localizedDescription": "Stremio streams with Dolby Atmos and Dolby Vision.",
+      "iconURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/icon.png",
+      "tintColor": "6B66FF",
+      "category": "entertainment",
+      "screenshots": [],
+      "versions": [
+        {
+          "version": "0.1.73",
+          "buildVersion": "73",
+          "date": "2026-11-28T20:28:37Z",
+          "localizedDescription": "iPad: big player controls only in full-width windows; real landscape screenshots [screens]",
+          "downloadURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/AtmosPlayer-0.1.73.ipa",
+          "size": 13385321,
+          "minOSVersion": "18.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      },
+      "version": "0.1.73",
+      "versionDate": "2026-11-28T20:28:37Z",
+      "versionDescription": "iPad: big player controls only in full-width windows; real landscape screenshots [screens]",
+      "downloadURL": "https://raw.githubusercontent.com/shubh-chauhan/AtmosPlayer/source/AtmosPlayer-0.1.73.ipa",
+      "size": 13385321
+    }
+  ],
+  "news": []
+}
