@@ -209,7 +209,7 @@ jobs:
     name: Simulator self-check
     # Every build: runs the app's self-check in the iOS Simulator. Screenshots of the main
     # screens (pushed to the `previews` branch) only when the workflow is run by hand
-    # (Actions > Build unsigned IPA > Run workflow).
+    # (Actions > Build unsigned IPA > Run workflow) or the commit message says [screens].
     runs-on: xcode-27
     timeout-minutes: 65
     permissions:
@@ -298,7 +298,7 @@ jobs:
           echo "UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: Screenshot screens
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[screens]')
         run: |
           xcrun simctl ui "$UDID" appearance dark
           xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4
@@ -363,7 +363,7 @@ jobs:
           ls -l shots
 
       - uses: actions/upload-artifact@v4
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[screens]'))
         with:
           name: preview-screenshots
           path: shots
@@ -371,20 +371,20 @@ jobs:
 
       - name: Package the simulator app
         # For running the app in a browser (appetize.io: upload this zip, it runs in an iPhone simulator).
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[screens]')
         run: |
           cd build/Build/Products/Debug-iphonesimulator
           ditto -c -k --sequesterRsrc --keepParent AtmosPlayer.app "$GITHUB_WORKSPACE/AtmosPlayer-simulator.zip"
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[screens]')
         with:
           name: AtmosPlayer-simulator-app
           path: AtmosPlayer-simulator.zip
           if-no-files-found: warn
 
       - name: Publish to the previews branch
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[screens]')
         run: |
           cd shots
           git init -q -b previews

@@ -37,7 +37,7 @@ struct HomeScreen: View {
                     } else if feed.loading {
                         HomeSkeleton()
                     }
-                LazyVStack(alignment: .leading, spacing: 32) {
+                LazyVStack(alignment: .leading, spacing: Device.sectionSpacing) {
                     continueWatching
 
                     if let recommended = recommender.row("recommended") {
@@ -888,9 +888,9 @@ struct HeroCard: View {
             HStack(spacing: 12) {
                 Button(action: onOpen) {
                     Label("Watch Now", systemImage: "play.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 26)
-                        .frame(height: 44)
+                        .font(Device.isPad ? .headline : .subheadline.weight(.semibold))
+                        .padding(.horizontal, Device.isPad ? 32 : 26)
+                        .frame(height: Device.isPad ? 52 : 44)
                         .background(.white, in: Capsule())
                         .foregroundStyle(.black)
                 }
@@ -902,7 +902,7 @@ struct HeroCard: View {
                     Image(systemName: inList ? "checkmark" : "plus")
                         .font(.headline)
                         .contentTransition(.symbolEffect(.replace))
-                        .frame(width: 44, height: 44)
+                        .frame(width: Device.isPad ? 52 : 44, height: Device.isPad ? 52 : 44)
                         .glass(Circle(), interactive: true)
                 }
                 .accessibilityLabel(inList ? "Remove from My List" : "Add to My List")
@@ -984,7 +984,7 @@ struct GenreBrowser: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Browse by Genre")
-                .font(.title3.bold())
+                .font(Device.sectionFont)
                 .foregroundStyle(.white)
                 .padding(.horizontal, Device.margin)
             ScrollView(.horizontal) {

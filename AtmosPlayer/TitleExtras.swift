@@ -374,7 +374,7 @@ struct PersonScreen: View {
     private func section(_ title: String, _ items: [MetaPreview]) -> some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text(title).font(.title3.bold()).foregroundStyle(.white)
+                Text(title).font(Device.sectionFont).foregroundStyle(.white)
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(items) { item in
                         NavigationLink(value: MetaRef(item)) {

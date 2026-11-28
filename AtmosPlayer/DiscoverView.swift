@@ -140,7 +140,7 @@ struct Shelf<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Device.isPad ? 14 : 10) {
             Group {
                 if let seeAll {
                     NavigationLink(value: seeAll) {
@@ -156,7 +156,7 @@ struct Shelf<Content: View>: View {
                     Text(title)
                 }
             }
-            .font(.title3.bold())
+            .font(Device.sectionFont)
             .foregroundStyle(.white)
             .lineLimit(1)
             .padding(.horizontal, Device.margin)
@@ -473,7 +473,7 @@ struct SearchScreen: View {
     private func resultRow(_ row: CatalogRow) -> some View {
         if row.id == "imdb/top" {
             VStack(alignment: .leading, spacing: 10) {
-                Text(row.title).font(.title3.bold()).foregroundStyle(.white)
+                Text(row.title).font(Device.sectionFont).foregroundStyle(.white)
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(row.items) { item in resultCard(item) }
                 }
@@ -496,7 +496,7 @@ struct SearchScreen: View {
 
     private var peopleRow: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("People").font(.title3.bold()).foregroundStyle(.white)
+            Text("People").font(Device.sectionFont).foregroundStyle(.white)
                 .padding(.horizontal, Device.margin)
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 16) {
@@ -528,7 +528,7 @@ struct SearchScreen: View {
         if !recent.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Recent Searches").font(.title3.bold()).foregroundStyle(.white)
+                    Text("Recent Searches").font(Device.sectionFont).foregroundStyle(.white)
                     Spacer()
                     Button("Clear") { withAnimation { recentRaw = "" } }
                         .font(.subheadline.weight(.semibold))
@@ -563,7 +563,7 @@ struct SearchScreen: View {
         }
         if let popular = feed.top.first(where: { $0.id == "top-movies" }) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Popular Right Now").font(.title3.bold()).foregroundStyle(.white)
+                Text("Popular Right Now").font(Device.sectionFont).foregroundStyle(.white)
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(popular.items) { item in
                         NavigationLink(value: MetaRef(item)) {

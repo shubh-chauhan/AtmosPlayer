@@ -427,9 +427,10 @@ struct PlayerView: View {
                 Spacer(minLength: 0)
                 bottomArea
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            // iPad: controls sit in from the edges, the way a big screen's do.
+            .padding(.horizontal, Device.isPad ? 40 : 24)
+            .padding(.top, Device.isPad ? 20 : 12)
+            .padding(.bottom, Device.isPad ? 20 : 8)
         }
         .foregroundStyle(.white)
         .tint(.white)
@@ -480,17 +481,18 @@ struct PlayerView: View {
     }
 
     private var centerTransport: some View {
-        HStack(spacing: 70) {
+        let k = Device.controlScale
+        return HStack(spacing: 70 * k) {
             Button { skip(-skipSeconds, flash: false) } label: {
                 Image(systemName: skipSymbol(back: true))
-                    .font(.system(size: 34, weight: .regular))
-                    .frame(width: 64, height: 64)
+                    .font(.system(size: 34 * k, weight: .regular))
+                    .frame(width: 64 * k, height: 64 * k)
                     .contentShape(Circle())
             }
             Button(action: togglePlayback) {
                 Image(systemName: showsPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 54, weight: .regular))
-                    .frame(width: 84, height: 84)
+                    .font(.system(size: 54 * k, weight: .regular))
+                    .frame(width: 84 * k, height: 84 * k)
                     .contentShape(Circle())
                     .contentTransition(.symbolEffect(.replace.downUp, options: .speed(1.5)))
                     // The buffering spinner takes this spot while it shows.
@@ -502,8 +504,8 @@ struct PlayerView: View {
             .accessibilityLabel(showsPlaying ? "Pause" : "Play")
             Button { skip(skipSeconds, flash: false) } label: {
                 Image(systemName: skipSymbol(back: false))
-                    .font(.system(size: 34, weight: .regular))
-                    .frame(width: 64, height: 64)
+                    .font(.system(size: 34 * k, weight: .regular))
+                    .frame(width: 64 * k, height: 64 * k)
                     .contentShape(Circle())
             }
         }
@@ -519,13 +521,13 @@ struct PlayerView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if let episode = item.watch?.episodeLabel {
                         Text(episode)
-                            .font(.subheadline.weight(.semibold))
+                            .font(Device.isPad ? .headline : .subheadline.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.7))
                             .lineLimit(1)
                     }
                     HStack(spacing: 8) {
                         Text(item.watch?.name ?? item.displayTitle)
-                            .font(.title3.weight(.bold))
+                            .font(Device.isPad ? .title2.weight(.bold) : .title3.weight(.bold))
                             .lineLimit(1)
                         if let badge = status.formatBadge {
                             Text(badge.text)

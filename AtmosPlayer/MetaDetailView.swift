@@ -139,7 +139,7 @@ struct MetaDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     hero(height: heroHeight, side: side)
-                    VStack(alignment: .leading, spacing: 30) {
+                    VStack(alignment: .leading, spacing: Device.isPad ? 44 : 30) {
                         if !wide { descriptionBlock }
                         if let meta {
                             RatingsRow(meta: meta, tmdbRating: extras?.tmdbRating, more: scores)
@@ -624,7 +624,7 @@ struct MetaDetailView: View {
     private var aboutBlock: some View {
         if let meta {
             VStack(alignment: .leading, spacing: 16) {
-                Text("About").font(.title3.bold()).foregroundStyle(.white)
+                Text("About").font(Device.sectionFont).foregroundStyle(.white)
                 if wide, let description = meta.description, !description.isEmpty {
                     Text(description)
                         .font(.subheadline)

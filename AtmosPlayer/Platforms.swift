@@ -86,7 +86,7 @@ struct WhereToWatch: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Where to Watch")
-                .font(.title3.bold())
+                .font(Device.sectionFont)
                 .foregroundStyle(.white)
                 .padding(.horizontal, Device.margin)
             ScrollView(.horizontal) {
@@ -147,7 +147,7 @@ struct PlatformBrowser: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Streaming Services").font(.title3.bold()).foregroundStyle(.white)
+            Text("Streaming Services").font(Device.sectionFont).foregroundStyle(.white)
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(StreamingPlatform.all) { platform in
                     NavigationLink(value: platform.catalogRoute) {

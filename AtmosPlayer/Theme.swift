@@ -103,6 +103,12 @@ enum Device {
     static func size(_ value: CGFloat) -> CGFloat { (value * scale).rounded() }
     /// The page's side margin.
     static let margin: CGFloat = isPad ? 32 : 20
+    /// Section headings ("Trending", "About"…): a size up on iPad, where they head far wider rows.
+    static let sectionFont: Font = isPad ? .title2.bold() : .title3.bold()
+    /// Room between a page's sections: more on iPad's taller screen.
+    static let sectionSpacing: CGFloat = isPad ? 44 : 32
+    /// Player transport buttons are this much larger on iPad, where they sit farther apart.
+    static let controlScale: CGFloat = isPad ? 1.22 : 1
 }
 
 /// Keeps lists and forms to a comfortable reading width on iPad instead of stretching every
