@@ -669,7 +669,7 @@ struct HeroCarousel: View {
                 _ = await MetaResolver.heroArt(for: MetaRef(neighbour), portrait: !wide,
                                                fallbacks: ArtworkURL.heroFallbacks(id: neighbour.id, background: neighbour.background,
                                                                                    poster: neighbour.poster, portrait: !wide),
-                                               maxPixel: 1800)
+                                               maxPixel: HeroCard.pixels)
                 await findTrailer(neighbour)
             }
         }
@@ -765,6 +765,8 @@ private struct HeroSize: ViewModifier {
 }
 
 struct HeroCard: View {
+    /// How large hero art is decoded: an iPad's hero is far bigger than a phone's.
+    static let pixels = Device.isPad ? 2400 : 1800
     let item: MetaPreview
     var wide = false
     var active = true
@@ -801,7 +803,7 @@ struct HeroCard: View {
                     .overlay {
                         RemoteImage(url: MetaResolver.decidedHeroArt(MetaRef(item), portrait: !wide)
                                         ?? (ready ? chosen : nil),
-                                    maxPixel: 1800, placeholderSymbol: "")
+                                    maxPixel: HeroCard.pixels, placeholderSymbol: "")
                             .scaleEffect(active && pushedIn ? 1.07 : 1, anchor: wide ? .center : .top)
                             .animation(active && pushedIn ? .linear(duration: 14) : .easeOut(duration: 0.4),
                                        value: active && pushedIn)
@@ -854,15 +856,18 @@ struct HeroCard: View {
             let picked = await MetaResolver.heroArt(for: MetaRef(item), portrait: !wide,
                                                     fallbacks: ArtworkURL.heroFallbacks(id: item.id, background: item.background,
                                                                                         poster: item.poster, portrait: !wide),
-                                                    maxPixel: 1800)
+                                                    maxPixel: HeroCard.pixels)
             if !Task.isCancelled { withAnimation(.easeOut(duration: 0.3)) { chosen = picked; ready = true } }
         }
     }
 
+    /// The logo's height: smaller in landscape iPhone's short screen, larger on iPad's big one.
+    private var logoHeight: CGFloat { short ? 68 : wide ? (Device.isPad ? 132 : 92) : 100 }
+
     private var content: some View {
         VStack(alignment: wide ? .leading : .center, spacing: 12) {
-            TitleArt(logo: item.logo, name: item.name, maxHeight: short ? 68 : wide ? 92 : 100)
-                .frame(maxWidth: wide ? 320 : .infinity, maxHeight: short ? 68 : wide ? 92 : 100,
+            TitleArt(logo: item.logo, name: item.name, maxHeight: logoHeight)
+                .frame(maxWidth: wide ? (Device.isPad ? 440 : 320) : .infinity, maxHeight: logoHeight,
                        alignment: wide ? .leading : .center)
                 .padding(.horizontal, wide ? 0 : 48)
             let facts = HomeText.facts(item, genres: 2)
@@ -877,7 +882,7 @@ struct HeroCard: View {
                     .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(wide && !short ? 3 : 2)
                     .multilineTextAlignment(wide ? .leading : .center)
-                    .frame(maxWidth: wide ? 440 : .infinity, alignment: wide ? .leading : .center)
+                    .frame(maxWidth: wide ? (Device.isPad ? 540 : 440) : .infinity, alignment: wide ? .leading : .center)
                     .padding(.horizontal, wide ? 0 : 36)
             }
             HStack(spacing: 12) {

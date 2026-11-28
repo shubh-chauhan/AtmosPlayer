@@ -340,8 +340,9 @@ struct MetaDetailView: View {
 
     private var heroContent: some View {
         VStack(alignment: wide ? .leading : .center, spacing: 14) {
-            TitleArt(logo: logo, name: name, maxHeight: short ? 64 : wide ? 104 : 100)
-                .frame(maxWidth: wide ? 340 : .infinity, maxHeight: short ? 64 : wide ? 104 : 100,
+            TitleArt(logo: logo, name: name, maxHeight: short ? 64 : wide ? (Device.isPad ? 136 : 104) : 100)
+                .frame(maxWidth: wide ? (Device.isPad ? 440 : 340) : .infinity,
+                       maxHeight: short ? 64 : wide ? (Device.isPad ? 136 : 104) : 100,
                        alignment: wide ? .leading : .center)
                 .padding(.horizontal, wide ? 0 : 36)
             factsLine
@@ -350,7 +351,7 @@ struct MetaDetailView: View {
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.85))
                     .lineLimit(short ? 2 : 3)
-                    .frame(maxWidth: 480, alignment: .leading)
+                    .frame(maxWidth: Device.isPad ? 560 : 480, alignment: .leading)
             }
             actionButtons
                 .frame(maxWidth: wide ? (short ? 560 : 440) : .infinity, alignment: .leading)
@@ -425,7 +426,8 @@ struct MetaDetailView: View {
                             Text(starting ? "Starting…" : primary.label)
                         }
                         .font(.headline)
-                        .frame(maxWidth: short ? 220 : .infinity)
+                        // A phone's Play spans the page; on iPad it's a button, not a bar.
+                        .frame(maxWidth: short ? 220 : Device.isPad && wide ? 320 : .infinity)
                         .frame(height: short ? 46 : 50)
                         .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .foregroundStyle(.black)

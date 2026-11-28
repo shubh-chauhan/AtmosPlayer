@@ -157,6 +157,10 @@ enum SelfCheck {
                && LibraryItem.episodeLabel("kitsu:1376:5", metaId: "kitsu:1376") == "E5"
                && LibraryItem.episodeLabel("tt1", metaId: "tt1") == nil,
                "episode labels read only what follows the title id")
+        let backdrop = "https://image.tmdb.org/t/p/w1280/x.jpg"
+        expect(ArtworkURL.best(backdrop, maxPixel: 2400)?.absoluteString == "https://image.tmdb.org/t/p/original/x.jpg"
+               && ArtworkURL.best(backdrop, maxPixel: 900)?.absoluteString == backdrop,
+               "TMDB art is asked for at full size only when the frame needs it")
         var titled = extras
         titled.textlessPoster = nil
         titled.poster = TMDB.imageBase + "w780/p.jpg"

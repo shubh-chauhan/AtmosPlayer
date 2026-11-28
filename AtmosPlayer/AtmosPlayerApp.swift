@@ -187,6 +187,8 @@ struct RootView: View {
                 SearchScreen()
             }
         }
+        // iPad: the tab bar at the top can open into a sidebar, as in the TV app. iPhone: unchanged.
+        .tabViewStyle(.sidebarAdaptable)
         .task {
             // CI screenshots only: turn to landscape for the "-landscape" screens.
             if PreviewMode.screen?.hasSuffix("-landscape") == true {

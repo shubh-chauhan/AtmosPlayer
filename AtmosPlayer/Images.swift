@@ -19,7 +19,8 @@ actor ImagePipeline {
 
     init() {
         memory.countLimit = 400
-        memory.totalCostLimit = 120 * 1024 * 1024
+        // iPad heroes decode bigger, and iPads have the memory for it.
+        memory.totalCostLimit = (Device.isPad ? 220 : 120) * 1024 * 1024
         let config = URLSessionConfiguration.default
         config.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024,
                                    diskCapacity: 400 * 1024 * 1024,
@@ -162,6 +163,13 @@ enum ArtworkURL {
 
     static func best(_ raw: String?, maxPixel: Int) -> URL? {
         guard var text = raw, !text.isEmpty else { return nil }
+        // TMDB's w780 / w1280 are soft when a frame needs more (an iPad hero is ~2400 px tall):
+        // the full-size file is asked for then, and decoded down to what's needed.
+        if text.contains("image.tmdb.org/t/p/") {
+            for (size, width) in [("/w780/", 780), ("/w1280/", 1280)] where text.contains(size) && maxPixel > width * 6 / 5 {
+                text = text.replacingOccurrences(of: size, with: "/original/")
+            }
+        }
         // IMDb artwork (from search): ask Amazon's image server for the size needed, not the original.
         if text.contains("media-amazon.com/images/"), let range = text.range(of: "._V1_") {
             text = String(text[..<range.lowerBound]) + "._V1_QL80_UX\(min(maxPixel, 1600))_.jpg"
